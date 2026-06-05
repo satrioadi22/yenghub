@@ -2,11 +2,11 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 6.5 (SUPER FAST LOGCAT STREAMER)
+#    Versi: 7.0 (ANTI FREEZE CLOUD ENGINE)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
-CHECK_INTERVAL=5
+CHECK_INTERVAL=8
 LOG_FILE="/storage/emulated/0/roblox_reconnect.log"
 CONFIG_FILE="$HOME/roblox_config.cfg"
 
@@ -15,7 +15,10 @@ FILE_LAST_RELOG="$STATE_DIR/last_relog"
 FILE_GRACE_UNTIL="$STATE_DIR/grace_until"
 
 TELEPORT_GRACE=180
-MONITOR_PID=""
+
+# Mencegah CPU Android Cloud tidur (Sangat Penting untuk Redfinger!)
+echo "latency" > /sys/power/wake_lock 2>/dev/null
+chmod 666 /sys/power/wake_lock 2>/dev/null
 
 load_config() { [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"; }
 save_config() { echo -e "URL=\"$URL\"\nRELOG_SETIAP_JAM=$RELOG_SETIAP_JAM" > "$CONFIG_FILE"; }
@@ -24,51 +27,26 @@ log() { echo "[$(date +%H:%M:%S)] $1" | tee -a "$LOG_FILE"; }
 
 join_private_server() {
     log ""
+    log "🚀 Mengaktifkan ulang window manager cloud..."
+    wm dismiss-keyguard 2>/dev/null # Membuka paksa jika ada layar freeze/lockscreen cloud
+    
     log "🚀 Join private server Grow a Garden..."
     echo $(( $(date +%s) + TELEPORT_GRACE )) > "$FILE_GRACE_UNTIL"
 
     am force-stop "$PKG"
-    sleep 3
+    sleep 4
     am start -a android.intent.action.VIEW -d "$URL" "$PKG"
     log "✅ Private server launched"
     echo "$(date +%s)" > "$FILE_LAST_RELOG"
 }
 
-# ─────────────────────────────────────────
-#    CORE MONITOR JALUR CEPAT (REAL-TIME)
-# ─────────────────────────────────────────
-monitor_logcat_dc() {
-    # Pantau logcat secara real-time. Begitu teks di bawah ini muncul, langsung eksekusi!
-    logcat -v time 2>/dev/null | grep --line-buffered -iE "Connection lost|Lost connection with reason|Disconnect error|Error code: 288|288|shutdown" | while read -r line; do
-        
-        NOW=$(date +%s)
-        GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
-        
-        # Jaga-jaga agar tidak memotong proses server hop Delta (Masa aman 3 menit)
-        if [ -n "$GRACE" ] && [ "$NOW" -lt "$GRACE" ]; then
-            continue
-        fi
-        
-        log "🚨 LOGCAT MATCH: Terdeteksi Sinyal DC Game ($line)"
-        log "♻️ Rejoin otomatis dipicu sekarang juga!"
-        
-        join_private_server
-        sleep 20
-    done
-}
-
-start_monitor() {
-    kill "$MONITOR_PID" 2>/dev/null
-    sleep 1
-    logcat -c
-    sleep 1
-    monitor_logcat_dc &
-    MONITOR_PID=$!
-    log "🔍 Monitor DC Real-time Aktif (PID: $MONITOR_PID)"
+wait_for_ingame() {
+    log "👀 Menunggu loading game (25 detik)..."
+    sleep 25
 }
 
 # ─────────────────────────────────────────
-#    MAIN RUNNER
+#    MAIN LOOP ENGINE (DENGAN DETEKSI ABSOLUT)
 # ─────────────────────────────────────────
 
 if [ "$(id -u)" != "0" ]; then echo "⚠️ Minta akses root..."; exec su -c "$0"; fi
@@ -87,34 +65,60 @@ fi
 mkdir -p "$STATE_DIR"
 clr
 echo "========================================="
-echo "    ROBLOX RECONNECT v6.5 (FAST LOGCAT)   "
+echo "    ROBLOX RECONNECT v7.0 (ANTI-FREEZE)   "
 echo "========================================="
 log "URL: $URL"
 echo "========================================="
 
 join_private_server
-sleep 20
-start_monitor
+wait_for_ingame
 
 while true; do
     NOW=$(date +%s)
+    GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
     
-    # Cek kasat mata: Apakah proses Roblox-nya mati total (crash ke home)
+    # 1. CEK INDIKATOR PROSES (JALUR UTAMA JIKA ROBLOX CRASH/MATI)
     if ! pidof "$PKG" > /dev/null 2>&1 && ! ps -A 2>/dev/null | grep -q "$PKG"; then
-        log "💥 Roblox mati/tertutup! Mengembalikan ke game..."
+        log "💥 Roblox terdeteksi Mati/Crash setelah Pengalaman Virtual Terputus!"
+        log "♻️ Melakukan Rejoin Paksa..."
         join_private_server
-        sleep 20
-        start_monitor
+        wait_for_ingame
         continue
     fi
+
+    # 2. DETEKSI EMBEDDED LOGCAT (KHUSUS ERROR 288 / DISCONNECT)
+    if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
+        # Cek apakah 50 baris logcat terakhir mencatat adanya error putus koneksi
+        if logcat -d -t 50 2>/dev/null | grep -qiE "Connection lost|Lost connection|288|shutdown|kick|Disconnect"; then
+            log "🚨 LOG DETECTED: Log sistem mencatat kode 288 / Sinyal terputus!"
+            log "♻️ Eksekusi Force Close & Rejoin ke Private Server..."
+            logcat -c # Bersihkan log lama biar ga terbaca berulang
+            join_private_server
+            wait_for_ingame
+            continue
+        fi
+        
+        # 3. DETEKSI DUMPSYS WINDOWS TERBARU (ANTI GAGAL CLOUD)
+        # Jika window manager mendeteksi ada dialog/error atau stuck, langsung sikat!
+        if dumpsys window 2>/dev/null | grep -q "$PKG" && dumpsys window 2>/dev/null | grep -qiE "error|dialog|popup|alert"; then
+            log "⚠️ VISUAL WARNING: Terdeteksi jendela dialog error 288 membeku!"
+            sleep 5
+            # Cek sekali lagi buat mastiin bukan loading map
+            if dumpsys window 2>/dev/null | grep -qiE "error|dialog|popup|alert"; then
+                log "♻️ Jendela error valid menetap permanen. Rejoin sekarang!"
+                join_private_server
+                wait_for_ingame
+                continue
+            fi
+        fi
+    fi
     
-    # Cek berkala untuk relog per jam
+    # 4. CEK TIMER RELOG BERKALA
     LAST_RELOG=$(cat "$FILE_LAST_RELOG" 2>/dev/null || echo "$NOW")
     if [ $((NOW - LAST_RELOG)) -ge $((RELOG_SETIAP_JAM * 3600)) ]; then
-        log "🔄 Jadwal relog berkala tiba..."
+        log "🔄 Jadwal relog berkala (1 Jam) terpenuhi. Memulai ulang..."
         join_private_server
-        sleep 20
-        start_monitor
+        wait_for_ingame
         continue
     fi
 
