@@ -2,7 +2,7 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 5.0 (PURE VISUAL DETECTOR - ANTI LOGCAT ERROR)
+#    Versi: 6.0 (HYBRID LOGIC - TELEPORT & SHUTDOWN FIX)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -38,7 +38,6 @@ save_config() {
 # ─────────────────────────────────────────
 #    CONFIG ROBLOX AUTO RECONNECT
 # ─────────────────────────────────────────
-
 URL="$URL"
 RELOG_SETIAP_JAM=$RELOG_SETIAP_JAM
 RECONNECT_OTOMATIS=$RECONNECT_OTOMATIS
@@ -63,7 +62,7 @@ clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 
 header() {
     echo "========================================="
-    echo "    ROBLOX AUTO RECONNECT v5.0 (VISUAL)"
+    echo "    ROBLOX AUTO RECONNECT v6.0 (HYBRID)"
     echo "========================================="
 }
 
@@ -75,7 +74,6 @@ show_toggle() {
 show_current_config() {
     echo ""
     echo "  URL    : ${URL:-[belum diisi]}"
-    echo "  Relog  : ${RELOG_SETIAP_JAM} jam"
     echo "  Restart kalau crash: $(show_toggle $RESTART_KALAU_CRASH)"
     echo ""
 }
@@ -142,29 +140,48 @@ join_private_server() {
     log ""
     log "🚀 Launching Private Server Garden..."
     
-    # Beri proteksi waktu aman (180 detik) agar tidak dicek layarnya pas loading/teleport
+    # Beri proteksi waktu aman (180 detik) agar tidak terganggu proses loading awal
     echo $(( $(date +%s) + TELEPORT_GRACE )) > "$FILE_GRACE_UNTIL"
 
     am force-stop "$PKG"
     sleep 4
     am start -a android.intent.action.VIEW -d "$URL" "$PKG"
     log "✅ Roblox diluncurkan. Menunggu Delta memindahkan akun ke Market..."
-    echo "$(date +%s)" > "$FILE_LAST_RELOG"
 }
 
-# Fungsi monitor background/foreground murni pakai Logcat sederhana
-monitor_app_state() {
+# MONITOR BACKGROUND & LOGCAT SHUTDOWN SECARA REALTIME
+monitor_logcat_hybrid() {
     while read -r line; do
+        # 1. Cek status background app
         if echo "$line" | grep -qi "foregroundActivities=false" && echo "$line" | grep -q "$PKG"; then
             echo "1" > "$FILE_IN_BACKGROUND"
             log "📱 App masuk background"
+            continue
         fi
         if echo "$line" | grep -qi "foregroundActivities=true" && echo "$line" | grep -q "$PKG"; then
             sleep 3
             echo "0" > "$FILE_IN_BACKGROUND"
             log "📱 App kembali foreground"
+            continue
         fi
-    done < <(logcat -v time 2>/dev/null | grep --line-buffered -i "foregroundActivities=")
+
+        # 2. DETEKSI AKURAT ERROR 288 / SHUTDOWN (Logcat ga bakalan meleset)
+        if echo "$line" | grep -qiE "288|shutdown"; then
+            # Ambil timestamp saat ini untuk validasi grace period
+            local NOW; NOW=$(date +%s)
+            local GRACE; GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
+            
+            # Jika tulisan shutdown muncul SETELAH lewat masa loading awal (artinya pas udah di Market)
+            if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
+                log "🚨 KATA KUNCI DISCONNECT TERDETEKSI: $line"
+                log "🚨 POSITIF: Server Market Trade mengalami Shutdown / Error 288!"
+                log "♻️ Mengeksekusi Rejoin ke Private Server Garden..."
+                
+                # Panggil rejoin langsung dari background monitor
+                join_private_server
+            fi
+        fi
+    done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE "foregroundActivities=|288|shutdown")
 }
 
 cleanup() {
@@ -198,15 +215,15 @@ echo "0" > "$FILE_IN_BACKGROUND"
 
 clr
 header
-log "Bot Mode: PURE VISUAL MONITORING"
+log "Bot Mode: HYBRID DETECTOR (ANTI-BEGAL DELTA)"
 log "URL: $URL"
 echo "========================================="
 
 join_private_server
 
-# Jalankan pendeteksi status background di background process
+# Jalankan pendeteksi logcat di background process
 logcat -c
-monitor_app_state &
+monitor_logcat_hybrid &
 MONITOR_PID=$!
 
 while true; do
@@ -214,34 +231,13 @@ while true; do
     
     NOW=$(date +%s)
     GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
-    BG_STATE=$(cat "$FILE_IN_BACKGROUND" 2>/dev/null)
 
-    # 1. CEK APALAKAH ROBLOX CRASH / MATI TOTAL
+    # 1. CEK APAKAH ROBLOX CRASH / MATI TOTAL
     if [ "$RESTART_KALAU_CRASH" = "1" ]; then
         if ! ps -A 2>/dev/null | grep -q "$PKG" && ! pidof "$PKG" > /dev/null 2>&1; then
             log "💥 Roblox tertutup/crash! Mengembalikan ke Private Server..."
             join_private_server
             continue
-        fi
-    fi
-
-    # Jika aplikasi sedang di-minimize/background, lewati pengecekan pop-up layar
-    [ "$BG_STATE" = "1" ] && continue
-
-    # 2. FITUR UTAMA: DETEKSI POP-UP ERROR (DENGAN PERLINDUNGAN GRACE TIME TELEPORT)
-    if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
-        if dumpsys window 2>/dev/null | grep -q "$PKG" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
-            
-            log "🔍 Menemukan indikasi dialog pop-up. Memverifikasi dalam 7 detik..."
-            sleep 7
-            
-            # Cek ulang setelah 7 detik untuk memastikan itu bukan loading room biasa
-            if dumpsys window 2>/dev/null | grep -q "$PKG" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
-                log "🚨 POSITIF: Terdeteksi Pop-up Disconnect / Shutdown Server permanen di layar!"
-                log "♻️ Melakukan Rejoin otomatis ke Private Server..."
-                join_private_server
-                continue
-            fi
         fi
     fi
 
