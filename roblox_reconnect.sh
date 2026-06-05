@@ -2,7 +2,7 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 4.1 (FIXED - NO FALSE DETECT)
+#    Versi: 4.2 (FULL UTUH - DENGAN WIZARD SETUP)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -24,7 +24,7 @@ LAST_VERBOSE=0
 VERBOSE_INTERVAL=600
 
 # ─────────────────────────────────────────
-#    FUNGSI CONFIG
+#    FUNGSI CONFIG & WIZARD
 # ─────────────────────────────────────────
 
 load_config() {
@@ -51,6 +51,33 @@ default_config() {
     RECONNECT_SAAT_HOME=0
 }
 
+wizard_setup() {
+    clr; header; echo ""
+    while true; do
+        echo "  ▶ Halo bro! Masukkan link private server Roblox kamu di bawah:"
+        printf "  > "
+        read -r URL
+        if [ -n "$URL" ]; then break; fi
+        echo "  ⚠ URL tidak boleh kosong!"
+        echo ""
+    done
+
+    # Set default value sesuai setelan (0 0 1 0) kesukaan lu
+    RELOG_SETIAP_JAM=1
+    RECONNECT_OTOMATIS=0
+    RESTART_KALAU_CRASH=1
+    RECONNECT_SAAT_HOME=0
+
+    save_config
+    echo ""
+    echo "  ✅ URL Private Server Berhasil Disimpan!"
+    sleep 1
+}
+
+# ─────────────────────────────────────────
+#    FUNGSI TAMPILAN
+# ─────────────────────────────────────────
+
 clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 header() {
     echo "========================================="
@@ -72,8 +99,9 @@ menu_utama() {
         read -r PILIHAN
         case $PILIHAN in
             1) return 0 ;;
-            2) clr; echo "Paste URL baru:"; read -r URL; save_config ;;
+            2) clr; echo "Paste URL Private Server baru:"; read -r URL; save_config ;;
             3) exit 0 ;;
+            *) echo "  ⚠ Pilih angka 1-3"; sleep 1 ;;
         esac
     done
 }
@@ -136,7 +164,6 @@ monitor_disconnect() {
             echo "0" > "$FILE_RECONNECTING"
             join_private_server
             wait_for_ingame
-            # Bersihkan logcat setelah rejoin agar tidak membaca log error lama
             logcat -c 
             break
         fi
@@ -177,9 +204,11 @@ if [ "$(id -u)" != "0" ]; then exec su -c "$0"; fi
 
 default_config
 load_config
-if [ -z "$URL" ] || [ ! -f "$CONFIG_FILE" ]; then
-    URL="LINK_PS_LU_DI_SINI"
-    save_config
+
+# JIKA FILE CONFIG BELUM ADA ATAU LINK URL KOSONG, JALANKAN SETUP LINK
+if [ ! -f "$CONFIG_FILE" ] || [ -z "$URL" ]; then
+    wizard_setup
+    load_config
 else
     menu_utama
 fi
@@ -190,7 +219,7 @@ echo "0" > "$FILE_RECONNECTING"
 echo "0" > "$FILE_GRACE_UNTIL"
 
 clr; header
-log "Sistem otomatis v4.1 (Anti False-Detect) Aktif..."
+log "Sistem otomatis v4.2 Aktif..."
 join_private_server
 wait_for_ingame
 start_monitor
