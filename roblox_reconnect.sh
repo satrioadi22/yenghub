@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
 # ─────────────────────────────────────────
-#   ROBLOX AUTO RECONNECT + AUTO RELOG
-#   by: kamu | versi: 2.0
+#    ROBLOX AUTO RECONNECT + AUTO RELOG
+#    Versi: 3.0 (Spesial Fix Hop Market + Shutdown 288)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -24,7 +24,7 @@ LAST_VERBOSE=0
 VERBOSE_INTERVAL=600
 
 # ─────────────────────────────────────────
-#   FUNGSI CONFIG
+#    FUNGSI CONFIG
 # ─────────────────────────────────────────
 
 load_config() {
@@ -36,8 +36,8 @@ load_config() {
 save_config() {
     cat > "$CONFIG_FILE" <<EOF
 # ─────────────────────────────────────────
-#   CONFIG ROBLOX AUTO RECONNECT
-#   Edit angka: 1 = ON, 0 = OFF
+#    CONFIG ROBLOX AUTO RECONNECT
+#    Edit angka: 1 = ON, 0 = OFF
 # ─────────────────────────────────────────
 
 URL="$URL"
@@ -65,14 +65,14 @@ default_config() {
 }
 
 # ─────────────────────────────────────────
-#   FUNGSI TAMPILAN
+#    FUNGSI TAMPILAN
 # ─────────────────────────────────────────
 
 clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 
 header() {
     echo "========================================="
-    echo "   ROBLOX AUTO RECONNECT + AUTO RELOG"
+    echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"
     echo "========================================="
 }
 
@@ -92,7 +92,7 @@ show_current_config() {
 }
 
 # ─────────────────────────────────────────
-#   WIZARD SETUP PERTAMA KALI
+#    WIZARD SETUP PERTAMA KALI
 # ─────────────────────────────────────────
 
 wizard_setup() {
@@ -160,7 +160,7 @@ wizard_setup() {
 }
 
 # ─────────────────────────────────────────
-#   MENU UTAMA (kalau config sudah ada)
+#    MENU UTAMA
 # ─────────────────────────────────────────
 
 menu_utama() {
@@ -290,8 +290,16 @@ menu_edit_setting() {
 }
 
 # ─────────────────────────────────────────
-#   FUNGSI CORE (log, join, monitor)
+#    FUNGSI CORE (log, join, monitor)
 # ─────────────────────────────────────────
+
+cek_apakah_terhubung() {
+    if pidof "$PKG" > /dev/null 2>&1 || ps -A 2>/dev/null | grep -q "$PKG"; then
+        return 0 
+    else
+        return 1 
+    fi
+}
 
 log() {
     echo "[$(date +%H:%M:%S)] $1" | tee -a "$LOG_FILE"
@@ -299,12 +307,9 @@ log() {
 
 join_private_server() {
     log ""
-    log "🚀 Join private server..."
+    log "🚀 Join private server Grow a Garden..."
 
     echo "1" > "$FILE_RECONNECTING"
-
-    # Grace period supaya teleport ke Market Trade
-    # tidak dianggap disconnect
     echo $(( $(date +%s) + TELEPORT_GRACE )) > "$FILE_GRACE_UNTIL"
 
     am force-stop "$PKG"
@@ -312,7 +317,6 @@ join_private_server() {
     am start -a android.intent.action.VIEW -d "$URL" "$PKG"
 
     log "✅ Private server launched"
-
     echo "$(date +%s)" > "$FILE_LAST_RELOG"
 }
 
@@ -376,14 +380,25 @@ monitor_disconnect() {
         DC_DETECTED=0
         DC_REASON=""
 
+        # LOGIKA DETEKSI 1: Server Shutdown / Pop-up Terputus (Error 288)
+        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288|kick|shutdown|Connection lost"; then
+            DC_DETECTED=1
+            DC_REASON="Server Shutdown / Pop-up Koneksi Terputus (Error 288)"
+        fi
+        
+        # LOGIKA DETEKSI 2: Disconnect Client Biasa
         if echo "$line" | grep -qi "Sending disconnect with reason"; then
-            DC_DETECTED=1; DC_REASON="Sending disconnect"
+            # Filter: Jika terdeteksi Delta lagi melakukan Hop ke Market Trade, ABREK / SKIP!
+            if echo "$line" | grep -qiE "teleport|hop|leave|transfer"; then 
+                log "🔄 Delta sedang melakukan Server Hop ke Market Trade... Biarkan berjalan."
+                continue 
+            fi
+            DC_DETECTED=1
+            DC_REASON="Sending disconnect (Logcat Client)"
         fi
-        if echo "$line" | grep -qi "Connection lost" && ! echo "$line" | grep -qi "Connection lost:"; then
-            DC_DETECTED=1; DC_REASON="Connection lost"
-        fi
+
         if echo "$line" | grep -qi "Lost connection with reason"; then
-            DC_DETECTED=1; DC_REASON="Lost connection"
+            DC_DETECTED=1; DC_REASON="Lost connection with reason"
         fi
         if echo "$line" | grep -qi "Disconnected from server for reason"; then
             DC_DETECTED=1; DC_REASON="Disconnected from server"
@@ -391,63 +406,46 @@ monitor_disconnect() {
 
         if [ "$DC_DETECTED" -eq 1 ]; then
 
-        # ========================================================
-        # ALUR BARU: Tunggu 30-60 detik & Cek Sesi Normal
-        # ========================================================
-        WAIT_TIME=60 # Ubah ke 60 jika ingin 1 menit
-        log "⚠️ DC terdeteksi. Menunggu $WAIT_TIME detik untuk cek kestabilan..."
-        sleep $WAIT_TIME
-
-        # PENTING: Kamu harus mengupdate status/kondisi koneksi di sini.
-        # Gantilah 'cek_apakah_terhubung' dengan fungsi atau kondisi asli di script-mu
-        # yang mendeteksi apakah aplikasi sudah kembali online/terhubung.
-        if cek_apakah_terhubung; then
-            log "✅ Aplikasi kembali normal/terhubung otomatis. Anggap perpindahan sesi normal, skip reconnect."
-            # Reset flag DC agar tidak terus-menerus masuk loop ini jika sudah aman
-            DC_DETECTED=0 
-            continue
-        fi
-        
-        log "❌ Tetap DC setelah ditunggu. Melanjutkan proses reconnect..."
-        # ========================================================
-
-        NOW=$(date +%s)
-        GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
-
-        if [ -n "$GRACE" ] && [ "$NOW" -lt "$GRACE" ]; then
-            log "⏳ Teleport grace aktif ($((GRACE-NOW))s), skip reconnect"
-            continue
-        fi
-
-        [ "$RECONNECT_OTOMATIS" = "0" ] && continue
-
-        RECONNECTING=$(cat "$FILE_RECONNECTING")
-        [ "$RECONNECTING" = "1" ] && { log "⏳ Sedang reconnect - skip"; continue; }
-
-        BG=$(cat "$FILE_IN_BACKGROUND")
-        if [ "$BG" = "1" ]; then
-            if [ "$RECONNECT_SAAT_HOME" = "0" ]; then
-                log "⚠️ DC di background - skip (RECONNECT_SAAT_HOME=0)"
+            # KHUSUS KASUS POP-UP SHUTDOWN (ERROR 288): Langsung bantai Rejoin, gausah pake nunggu delay!
+            if [ "$DC_REASON" = "Server Shutdown / Pop-up Koneksi Terputus (Error 288)" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
+                log "🚨 PERINGATAN: $DC_REASON Terdeteksi di Market Trade!"
+                log "♻️ Menutup paksa game dan kembali masuk ke Private Server Garden..."
+                
+                echo "0" > "$FILE_RECONNECTING"
+                join_private_server
+                wait_for_ingame
                 continue
             fi
-        fi
 
-        LAST=$(cat "$FILE_LAST_RECONNECT")
-        DIFF=$((NOW - LAST))
-        if [ "$DIFF" -lt "$RECONNECT_COOLDOWN" ]; then
-            log "⏳ Cooldown ($DIFF/$RECONNECT_COOLDOWN s) - skip"
-            continue
-        fi
+            # Delay normal untuk DC kedip biasa / pengecekan sesi (45 detik)
+            WAIT_TIME=45 
+            log "⚠️ Deteksi DC biasa ($DC_REASON). Menunggu $WAIT_TIME detik..."
+            sleep $WAIT_TIME
 
-        log "❌ DC! Reason: $DC_REASON"
-        echo "$NOW" > "$FILE_LAST_RECONNECT"
-        sleep 5
-        join_private_server
-        wait_for_ingame
-    fi
+            if cek_apakah_terhubung; then
+                log "✅ Game normal / Hop Delta sukses. Skip Reconnect."
+                DC_DETECTED=0 
+                continue
+            fi
+            
+            log "❌ Tetap Terputus. Mengembalikan ke Private Server..."
+
+            NOW=$(date +%s)
+            GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
+            if [ -n "$GRACE" ] && [ "$NOW" -lt "$GRACE" ]; then continue; fi
+            [ "$RECONNECT_OTOMATIS" = "0" ] && continue
+            RECONNECTING=$(cat "$FILE_RECONNECTING")
+            [ "$RECONNECTING" = "1" ] && continue
+
+            log "❌ Eksekusi Rejoin Utama!"
+            echo "$NOW" > "$FILE_LAST_RECONNECT"
+            sleep 5
+            join_private_server
+            wait_for_ingame
+        fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
-        "Sending disconnect with reason|Connection lost|Lost connection with reason|Disconnected from server for reason|foregroundActivities=")
+        "Sending disconnect with reason|Connection lost|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick")
 }
 
 start_monitor() {
@@ -478,16 +476,16 @@ cleanup() {
 trap cleanup INT TERM
 
 # ─────────────────────────────────────────
-#   MAIN — CEK ROOT DULU
+#    MAIN — CEK ROOT
 # ─────────────────────────────────────────
 
 if [ "$(id -u)" != "0" ]; then
-    echo "⚠️  Minta akses root..."
+    echo "⚠️ Minta akses root..."
     exec su -c "$0"
 fi
 
 # ─────────────────────────────────────────
-#   MAIN — LOAD CONFIG & TAMPILKAN MENU
+#    MAIN — LOAD CONFIG
 # ─────────────────────────────────────────
 
 default_config
@@ -502,7 +500,7 @@ else
 fi
 
 # ─────────────────────────────────────────
-#   JALANIN SCRIPT
+#    JALANIN SCRIPT
 # ─────────────────────────────────────────
 
 mkdir -p "$STATE_DIR"
@@ -513,13 +511,13 @@ echo "0" > "$FILE_RECONNECTING"
 
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
-echo "   ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
+echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
 log "Reconnect        : DC detection  → $(show_toggle $RECONNECT_OTOMATIS)"
 log "Restart crash    : auto restart  → $(show_toggle $RESTART_KALAU_CRASH)"
-log "Reconnect@home   : saat home     → $(show_toggle $RECONNECT_SAAT_HOME)"
+log "Reconnect@home   : saat home     → $(show_toggle $RESTART_KALAU_CRASH)"
 log "Log file         : $LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 echo ""
@@ -543,6 +541,17 @@ while true; do
             start_monitor
             continue
         fi
+    fi
+
+    # BACKUP VISUAL: Deteksi pop-up abu-abu 'Koneksi Terputus' langsung dari window UI
+    if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
+        log "⚠️ Terdeteksi pop-up dialog error di layar (Error 288 / Terputus). Langsung Rejoin!"
+        am force-stop "$PKG"
+        sleep 3
+        join_private_server
+        wait_for_ingame
+        start_monitor
+        continue
     fi
 
     if check_relog_needed; then
