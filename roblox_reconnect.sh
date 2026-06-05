@@ -2,7 +2,7 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 4.6 (FIX LOOP INPUT & ANTI-BEGAL HOP)
+#    Versi: 5.0 (LOG ACTIVITY TRACKER - REDFINGER SPECIAL)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -11,15 +11,15 @@ LOG_FILE="/storage/emulated/0/roblox_reconnect.log"
 CONFIG_FILE="$HOME/roblox_config.cfg"
 
 STATE_DIR="/data/local/tmp/rbx_state"
-FILE_LAST_RECONNECT="$STATE_DIR/last_reconnect"
 FILE_IN_BACKGROUND="$STATE_DIR/in_background"
 FILE_LAST_RELOG="$STATE_DIR/last_relog"
 FILE_RECONNECTING="$STATE_DIR/reconnecting"
 FILE_GRACE_UNTIL="$STATE_DIR/grace_until"
 
-RECONNECT_COOLDOWN=45
+# Folder log internal bawaan aplikasi Roblox
+RBX_LOG_DIR="/sdcard/Android/data/com.roblox.client/files/logs"
+
 TELEPORT_GRACE=180
-MONITOR_PID=""
 LAST_VERBOSE=0
 VERBOSE_INTERVAL=600
 
@@ -40,7 +40,7 @@ EOF
 
 default_config() { URL=""; RELOG_SETIAP_JAM=1; RECONNECT_OTOMATIS=1; RESTART_KALAU_CRASH=1; RECONNECT_SAAT_HOME=0; }
 clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
-header() { echo "========================================="; echo "    ROBLOX AUTO RECONNECT v4.6 (FIXED)"; echo "========================================="; }
+header() { echo "========================================="; echo "    ROBLOX AUTO RECONNECT v5.0 (LIVE)"; echo "========================================="; }
 show_toggle() { if [ "$1" = "1" ]; then echo "ON"; else echo "OFF"; fi; }
 
 show_current_config() {
@@ -53,31 +53,21 @@ show_current_config() {
 }
 
 wizard_setup() {
-    clr
-    header
-    echo ""
+    clr; header; echo ""
     while true; do
         echo "  Paste link private server Roblox kamu:"
         printf "  > "
         read -r URL
-        if [ -n "$URL" ]; then
-            break
-        fi
-        echo "  ⚠ URL tidak boleh kosong!"
-        echo ""
+        if [ -n "$URL" ]; then break; fi
+        echo "  ⚠ URL tidak boleh kosong!"; echo ""
     done
     RELOG_SETIAP_JAM=1; RECONNECT_OTOMATIS=1; RESTART_KALAU_CRASH=1; RECONNECT_SAAT_HOME=0
-    save_config
-    echo ""
-    echo "  ✅ Config tersimpan!"
-    sleep 1
+    save_config; echo ""; echo "  ✅ Config tersimpan!"; sleep 1
 }
 
 menu_utama() {
     while true; do
-        clr
-        header
-        show_current_config
+        clr; header; show_current_config
         echo "  1) Langsung jalanin"
         echo "  2) Ganti URL private server"
         echo "  3) Keluar"
@@ -86,16 +76,7 @@ menu_utama() {
         read -r PILIHAN
         case $PILIHAN in
             1) return 0 ;;
-            2) 
-                echo ""
-                echo "Paste URL baru:"
-                printf "> "
-                read -r NEW_URL
-                if [ -n "$NEW_URL" ]; then
-                    URL="$NEW_URL"
-                    save_config
-                fi
-                ;;
+            2) echo ""; echo "Paste URL baru:"; printf "> "; read -r NEW_URL; [ -n "$NEW_URL" ] && URL="$NEW_URL" && save_config ;;
             3) exit 0 ;;
             *) echo "  ⚠ Pilih angka 1-3"; sleep 1 ;;
         esac
@@ -103,25 +84,42 @@ menu_utama() {
 }
 
 # ─────────────────────────────────────────
-#    FUNGSI UTAMA KONEKSI JARINGAN
+#    CORE LOGIC: TRACKING AKTIVITAS FILE
 # ─────────────────────────────────────────
 
 log() { echo "[$(date +%H:%M:%S)] $1" | tee -a "$LOG_FILE"; }
 
-cek_koneksi_game() {
-    local RBX_PID; RBX_PID=$(pidof "$PKG" 2>/dev/null || ps -A 2>/dev/null | grep "$PKG" | awk '{print $2}' | head -n 1)
-    if [ -z "$RBX_PID" ]; then
+cek_status_aktif_game() {
+    # 1. Cek apakah proses aplikasi Roblox terdeteksi hidup di sistem
+    if ! pidof "$PKG" > /dev/null 2>&1 && ! ps -A 2>/dev/null | grep -q "$PKG"; then
         echo "CRASH"
         return
     fi
-    
-    # Deteksi jaringan aktif (ESTABLISHED) milik Roblox di Redfinger
-    local NET_CHECK; NET_CHECK=$(netstat -anp 2>/dev/null | grep "$RBX_PID" | grep -i "ESTABLISHED")
-    if [ -z "$NET_CHECK" ]; then
-        NET_CHECK=$(cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -v "00000000:0000" | awk '{print $4}' | grep "01")
+
+    # 2. Cari file log Roblox yang paling baru dimodifikasi
+    local LATEST_LOG; LATEST_LOG=$(ls -t "$RBX_LOG_DIR"/*.log 2>/dev/null | head -n 1)
+    if [ -z "$LATEST_LOG" ]; then
+        # Jika folder log belum terbaca, bypass agar tidak salah eksekusi
+        echo "ACTIVE"
+        return
     fi
 
-    if [ -n "$NET_CHECK" ]; then echo "CONNECTED"; else echo "DISCONNECTED"; fi
+    # Ambil waktu modifikasi terakhir file tersebut (dalam hitungan detik epoch linux)
+    local LAST_MOD; LAST_MOD=$(stat -c %Y "$LATEST_LOG" 2>/dev/null)
+    if [ -z "$LAST_MOD" ]; then
+        echo "ACTIVE"
+        return
+    fi
+
+    local NOW; NOW=$(date +%s)
+    local IDLE_TIME=$((NOW - LAST_MOD))
+
+    # Jika file log tidak diperbarui/ditulis sama sekali selama lebih dari 25 detik
+    if [ "$IDLE_TIME" -gt 25 ]; then
+        echo "STUCK"
+    else
+        echo "ACTIVE"
+    fi
 }
 
 join_private_server() {
@@ -141,29 +139,8 @@ join_private_server() {
 
 wait_for_ingame() {
     log "👀 Menunggu INGAME..."
-    sleep 15
+    sleep 20
     echo "0" > "$FILE_RECONNECTING"
-}
-
-# Monitor sederhana hanya untuk melacak status background aplikasi
-monitor_disconnect() {
-    while read -r line; do
-        if echo "$line" | grep -qi "foregroundActivities=false" && echo "$line" | grep -q "$PKG"; then
-            echo "1" > "$FILE_IN_BACKGROUND"
-            log "📱 App masuk background"
-        elif echo "$line" | grep -qi "foregroundActivities=true" && echo "$line" | grep -q "$PKG"; then
-            echo "0" > "$FILE_IN_BACKGROUND"
-            log "📱 App kembali foreground"
-        fi
-    done < <(logcat -v time 2>/dev/null | grep --line-buffered -i "foregroundActivities=")
-}
-
-start_monitor() {
-    kill "$MONITOR_PID" 2>/dev/null
-    sleep 1
-    logcat -c
-    monitor_disconnect &
-    MONITOR_PID=$!
 }
 
 check_relog_needed() {
@@ -173,11 +150,8 @@ check_relog_needed() {
     [ $((NOW - LAST)) -ge $((RELOG_SETIAP_JAM * 3600)) ]
 }
 
-cleanup() { log "🛑 Script dihentikan."; kill "$MONITOR_PID" 2>/dev/null; rm -rf "$STATE_DIR"; exit 0; }
-trap cleanup INT TERM
-
 # ─────────────────────────────────────────
-#    MAIN PROGRAM EXECUTION
+#    MAIN PROGRAM RUNNER
 # ─────────────────────────────────────────
 
 if [ "$(id -u)" != "0" ]; then echo "⚠️ Minta akses root..."; exec su -c "$0"; fi
@@ -196,44 +170,33 @@ echo "========================================="
 
 join_private_server
 wait_for_ingame
-start_monitor
 
 while true; do
     NOW=$(date +%s)
     GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
-    BG_STATE=$(cat "$FILE_IN_BACKGROUND" 2>/dev/null)
     
-    STATUS_GAME=$(cek_koneksi_game)
+    STATUS_GAME=$(cek_status_aktif_game)
 
-    # 1. CEK CRASH
+    # 1. HANDLE CRASH / PROSES MATI
     if [ "$STATUS_GAME" = "CRASH" ] && [ "$RESTART_KALAU_CRASH" = "1" ]; then
-        log "💥 Roblox crash/tertutup! Restart balik ke Private Server..."
+        log "💥 Roblox tertutup/crash! Mengembalikan ke Private Server..."
         join_private_server
         wait_for_ingame
-        start_monitor
         continue
     fi
 
-    # Lepaskan pengecekan jika app sedang di-home (kecuali fiturnya dinyalakan)
-    if [ "$BG_STATE" = "1" ] && [ "$RECONNECT_SAAT_HOME" = "0" ]; then
-        sleep "$CHECK_INTERVAL"
-        continue
-    fi
-
-    # 2. DETEKSI AMAN ERROR 288 (HANYA AKTIF JIKA GRACE PERIOD SUDAH HABIS)
+    # 2. HANDLE ERROR 288 / STUCK DI LAYAR KONEKSI TERPUTUS
     if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
-        if [ "$STATUS_GAME" = "DISCONNECTED" ] && [ "$RECONNECT_OTOMATIS" = "1" ]; then
+        if [ "$STATUS_GAME" = "STUCK" ] && [ "$RECONNECT_OTOMATIS" = "1" ]; then
+            log "🔍 Deteksi awal: Log Roblox berhenti merespons (Indikasi DC). Menunggu verifikasi akhir..."
+            sleep 10
             
-            # Beri toleransi 15 detik untuk membedakan antara lag biasa / loading map, dengan DC beneran
-            log "🔍 Deteksi awal: Kehilangan internet game. Verifikasi dalam 15 detik..."
-            sleep 15
-            
-            if [ "$(cek_koneksi_game)" = "DISCONNECTED" ]; then
-                log "🚨 POSITIF: Terbengong di pop-up Koneksi Terputus (Error 288)!"
-                log "♻️ Force close Roblox dan giring balik ke Private Server Garden..."
+            # Cek ulang satu kali lagi untuk memastikan bukan karena lag spike parah
+            if [ "$(cek_status_aktif_game)" = "STUCK" ]; then
+                log "🚨 POSITIF: Game membeku di pop-up Terputus (Error 288)!"
+                log "♻️ Melakukan Force Close & Rejoin otomatis ke Private Server..."
                 join_private_server
                 wait_for_ingame
-                start_monitor
                 continue
             fi
         fi
@@ -243,12 +206,11 @@ while true; do
         log "🔄 Relog otomatis berkala..."
         join_private_server
         wait_for_ingame
-        start_monitor
         continue
     fi
 
     if [ $((NOW - LAST_VERBOSE)) -ge "$VERBOSE_INTERVAL" ]; then
-        log "✅ Roblox running & Terkoneksi Aman."
+        log "✅ Roblox running & Aktif mengirim data."
         LAST_VERBOSE=$NOW
     fi
 
