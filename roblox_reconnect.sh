@@ -2,20 +2,17 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 8.0 (ROBLOX LOG MONITOR - ANTI BLUNDER)
+#    Versi: 9.0 (NETWORK ANALYZER - SHUTDOWN FIX)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
-CHECK_INTERVAL=10
+CHECK_INTERVAL=8
 CONFIG_FILE="$HOME/roblox_config.cfg"
 LOG_FILE="/storage/emulated/0/roblox_reconnect.log"
 
 TELEPORT_GRACE=180
 LAST_VERBOSE=0
 VERBOSE_INTERVAL=600
-
-# Folder log internal asli milik Roblox
-RBX_LOG_DIR="/sdcard/Android/data/com.roblox.client/files/logs"
 
 load_config() { [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"; }
 save_config() { cat > "$CONFIG_FILE" <<EOF
@@ -29,7 +26,7 @@ join_private_server() {
     log ""
     log "🚀 Launching Private Server Garden..."
     
-    # Masa aman 3 menit buat Delta mindahin akun ke Market Trade
+    # Kunci masa aman 3 menit buat Delta mindahin akun lu dari Garden ke Market
     echo $(( $(date +%s) + TELEPORT_GRACE )) > "$HOME/grace_until.txt"
 
     am force-stop "$PKG"
@@ -38,23 +35,28 @@ join_private_server() {
     log "✅ Roblox diluncurkan. Menunggu masuk ke Market..."
 }
 
-cek_log_roblox_dc() {
-    # Cari file log Roblox yang paling baru diubah/ditulis
-    local LATEST_LOG; LATEST_LOG=$(ls -t "$RBX_LOG_DIR"/*.log 2>/dev/null | head -n 1)
+cek_koneksi_game() {
+    # Ambil PID (Process ID) dari game Roblox yang lagi jalan
+    local RBX_PID; RBX_PID=$(pidof "$PKG" 2>/dev/null || ps -A 2>/dev/null | grep "$PKG" | awk '{print $2}' | head -n 1)
     
-    if [ -z "$LATEST_LOG" ]; then
-        echo "NORMAL"
+    if [ -z "$RBX_PID" ]; then
+        echo "CRASH"
         return
     fi
     
-    # Ambil 15 baris terakhir dari log game Roblox tersebut
-    local LOG_TAIL; LOG_TAIL=$(tail -n 15 "$LATEST_LOG" 2>/dev/null)
+    # Cek apakah PID Roblox tersebut punya koneksi jaringan aktif (ESTABLISHED)
+    # Kita cek via netstat atau langsung ke inet internal proc Android
+    local NET_CHECK; NET_CHECK=$(netstat -anp 2>/dev/null | grep "$RBX_PID" | grep -i "ESTABLISHED")
     
-    # Cek apakah ada kata kunci mutlak pemutusan hubungan server (Eror 288)
-    if echo "$LOG_TAIL" | grep -qiE "DisconnectReason: 288|Connection lost|Disconnection|connection closed|Shutting down"; then
-        echo "DC"
+    if [ -z "$NET_CHECK" ]; then
+        # Cek cadangan lewat file socket internal linux/android jika netstat dibatasi root
+        NET_CHECK=$(cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -v "00000000:0000" | awk '{print $4}' | grep "01")
+    fi
+
+    if [ -n "$NET_CHECK" ]; then
+        echo "CONNECTED"
     else
-        echo "NORMAL"
+        echo "DISCONNECTED"
     fi
 }
 
@@ -81,9 +83,9 @@ fi
 
 clear
 echo "========================================="
-echo "    BOT RUNNING: ROBLOX LOG DETECTOR     "
+echo "    BOT RUNNING: NETWORK CONNECTION MODE "
 echo "========================================="
-log "Bot siap memantau file log internal Roblox."
+log "Bot siap memantau status jaringan internet Roblox."
 
 join_private_server
 
@@ -92,27 +94,27 @@ while true; do
     
     NOW=$(date +%s)
     GRACE=$(cat "$HOME/grace_until.txt" 2>/dev/null)
+    
+    STATUS_GAME=$(cek_koneksi_game)
 
     # 1. PROTEKSI: CEK JIKA GAME TERTUTUP TOTAL / CRASH
-    if ! ps -A 2>/dev/null | grep -q "$PKG" && ! pidof "$PKG" > /dev/null 2>&1; then
-        log "💥 Roblox terdeteksi crash/close! Mengembalikan ke Private Server..."
+    if [ "$STATUS_GAME" = "CRASH" ]; then
+        log "💥 Roblox terdeteksi close/crash! Mengembalikan ke Private Server..."
         join_private_server
         continue
     fi
 
-    # 2. DETEKSI DC: HANYA BERAKSI SETELAH LEWAT MASA TELEPORT (GRACE PERIOD)
+    # 2. DETEKSI SHUTDOWN (EROR 288): HANYA BERAKSI SETELAH LEWAT MASA GRACE PERIOD
     if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
         
-        STATUS_GAME=$(cek_log_roblox_dc)
-        
-        if [ "$STATUS_GAME" = "DC" ]; then
-            log "🔍 Log Roblox mendeteksi tanda Disconnect / Server Shutdown. Verifikasi dalam 5 detik..."
-            sleep 5
+        if [ "$STATUS_GAME" = "DISCONNECTED" ]; then
+            log "🔍 Deteksi awal: Game Roblox kehilangan koneksi internet. Verifikasi dalam 10 detik..."
+            sleep 10
             
-            # Cek ulang untuk memastikan bukan sekadar lag kedip biasa
-            if [ "$(cek_log_roblox_dc)" = "DC" ]; then
-                log "🚨 POSITIF: Server Terputus (Eror 288) terkonfirmasi dari log game!"
-                log "♻️ Melakukan Rejoin otomatis ke Private Server..."
+            # Cek ulang, kalau setelah 10 detik internet game-nya tetep mati (berarti beneran stuck di screen Eror 288)
+            if [ "$(cek_koneksi_game)" = "DISCONNECTED" ]; then
+                log "🚨 POSITIF: Game terputus dari server (Error 288 / Server Mati)!"
+                log "♻️ Melakukan Rejoin otomatis kembali ke Private Server..."
                 join_private_server
                 continue
             fi
@@ -121,7 +123,7 @@ while true; do
 
     # Log berkala setiap 10 menit
     if [ $((NOW - LAST_VERBOSE)) -ge "$VERBOSE_INTERVAL" ]; then
-        log "✅ Monitor aman. Game berjalan lancar tanpa indikasi DC."
+        log "✅ Monitor aman. Koneksi internet Roblox ke server Market terpantau stabil."
         LAST_VERBOSE=$NOW
     fi
 done
