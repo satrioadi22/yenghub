@@ -2,7 +2,7 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 3.5 (FULL FIX - Hop Market, Shutdown 288 & Loading Loop)
+#    Versi: 4.0 (Opsi 1 - Pure Shutdown & Popup Detector)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -290,7 +290,7 @@ menu_edit_setting() {
 }
 
 # ─────────────────────────────────────────
-#    FUNGSI CORE (log, join, monitor)
+#    FUNGSI CORE
 # ─────────────────────────────────────────
 
 cek_apakah_terhubung() {
@@ -311,7 +311,7 @@ join_private_server() {
 
     echo "1" > "$FILE_RECONNECTING"
     
-    # Pasang masa aman 180 detik buat loading render screen awal game
+    # Kunci masa aman teleportasi biar ga dicek dulu layarnya
     echo $(( $(date +%s) + TELEPORT_GRACE )) > "$FILE_GRACE_UNTIL"
 
     am force-stop "$PKG"
@@ -360,6 +360,9 @@ wait_for_ingame() {
     echo "0" > "$FILE_RECONNECTING"
 }
 
+# ──────────────────────────────────────────────────
+# REVISI OPSI 1: Hapus filter DC biasa, fokus ke 288/Shutdown
+# ──────────────────────────────────────────────────
 monitor_disconnect() {
     log "🔍 Monitor DC aktif (PID: $$)"
     echo "0" > "$FILE_IN_BACKGROUND"
@@ -379,79 +382,19 @@ monitor_disconnect() {
             continue
         fi
 
-        DC_DETECTED=0
-        DC_REASON=""
-
-        # LOGIKA DETEKSI 1: Server Shutdown / Pop-up Terputus (Error 288)
-        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288|kick|shutdown|Connection lost"; then
-            DC_DETECTED=1
-            DC_REASON="Server Shutdown / Pop-up Koneksi Terputus (Error 288)"
-        fi
-        
-        # LOGIKA DETEKSI 2: Disconnect Client Biasa
-        if echo "$line" | grep -qi "Sending disconnect with reason"; then
-            # Filter Hop Delta
-            if echo "$line" | grep -qiE "teleport|hop|leave|transfer"; then 
-                log "🔄 Delta sedang melakukan Server Hop ke Market Trade... Biarkan berjalan."
-                continue 
-            fi
-            DC_DETECTED=1
-            DC_REASON="Sending disconnect (Logcat Client)"
-        fi
-
-        if echo "$line" | grep -qi "Lost connection with reason"; then
-            DC_DETECTED=1; DC_REASON="Lost connection with reason"
-        fi
-        if echo "$line" | grep -qi "Disconnected from server for reason"; then
-            DC_DETECTED=1; DC_REASON="Disconnected from server"
-        fi
-
-        if [ "$DC_DETECTED" -eq 1 ]; then
-
-            # KHUSUS KASUS POP-UP SHUTDOWN (ERROR 288): Langsung Rejoin instan
-            if [ "$DC_REASON" = "Server Shutdown / Pop-up Koneksi Terputus (Error 288)" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
-                log "🚨 PERINGATAN: $DC_REASON Terdeteksi di Market Trade!"
-                log "♻️ Menutup paksa game dan kembali masuk ke Private Server Garden..."
-                
-                echo "0" > "$FILE_RECONNECTING"
-                join_private_server
-                wait_for_ingame
-                continue
-            fi
-
-            # Hanya jalankan delay tunggu jika RECONNECT_OTOMATIS aktif (bernilai 1)
-            if [ "$RECONNECT_OTOMATIS" = "1" ]; then
-                WAIT_TIME=45 
-                log "⚠️ Deteksi DC biasa ($DC_REASON). Menunggu $WAIT_TIME detik..."
-                sleep $WAIT_TIME
-
-                if cek_apakah_terhubung; then
-                    log "✅ Game normal / Hop Delta sukses. Skip Reconnect."
-                    DC_DETECTED=0 
-                    continue
-                fi
-            else
-                # Jika RECONNECT_OTOMATIS dimatikan (0), abaikan log DC biasa ini
-                continue
-            fi
+        # HANYA RESPONS JIKA BENERAN SHUTDOWN / ERROR CODE 288 / KICK
+        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288|kick|shutdown"; then
+            log "🚨 PERINGATAN: Server Shutdown / Error 288 Terdeteksi!"
+            log "♻️ Menutup paksa game dan kembali masuk ke Private Server Garden..."
             
-            log "❌ Tetap Terputus. Mengembalikan ke Private Server..."
-
-            NOW=$(date +%s)
-            GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
-            if [ -n "$GRACE" ] && [ "$NOW" -lt "$GRACE" ]; then continue; fi
-            RECONNECTING=$(cat "$FILE_RECONNECTING")
-            [ "$RECONNECTING" = "1" ] && continue
-
-            log "❌ Eksekusi Rejoin Utama!"
-            echo "$NOW" > "$FILE_LAST_RECONNECT"
-            sleep 5
+            echo "0" > "$FILE_RECONNECTING"
             join_private_server
             wait_for_ingame
+            continue
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
-        "Sending disconnect with reason|Connection lost|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick")
+        "foregroundActivities=|288|shutdown|kick")
 }
 
 start_monitor() {
@@ -552,14 +495,11 @@ while true; do
         fi
     fi
 
-    # ──────────────────────────────────────────────────
-    # BACKUP VISUAL SECURE LOGIC (FIX LOADING LOOP)
-    # ──────────────────────────────────────────────────
-    # Layar cuma dicek setelah masa aman Grace Period (180s) habis
+    # BACKUP VISUAL SECURE: Deteksi pop-up stuck abu-abu di layar
     if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
         if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
             
-            # Double check: Tunggu 5 detik, kalau popup-nya masih ada, berarti beneran stuck Error 288
+            # Re-verifikasi 5 detik untuk memastikan bukan loading pindah room biasa
             sleep 5
             if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
                 log "⚠️ Terdeteksi pop-up stuck permanen di layar (Error 288 / Terputus). Force Rejoin!"
@@ -572,7 +512,6 @@ while true; do
             fi
         fi
     fi
-    # ──────────────────────────────────────────────────
 
     if check_relog_needed; then
         log "🔄 Relog setiap ${RELOG_SETIAP_JAM} jam..."
