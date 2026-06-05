@@ -2,7 +2,7 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 3.5 (FINAL RE-FIX - ANTI LOCKOUT 288)
+#    Versi: 3.5 (FIXED - Kembalikan Logika Asli + Proteksi Hop Market)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -92,7 +92,7 @@ show_current_config() {
 }
 
 # ─────────────────────────────────────────
-#    WIZARD SETUP
+#    WIZARD SETUP PERTAMA KALI
 # ─────────────────────────────────────────
 
 wizard_setup() {
@@ -130,10 +130,7 @@ wizard_setup() {
     read -r INPUT_RH
     if [ "$INPUT_RH" = "1" ]; then RECONNECT_SAAT_HOME=1; else RECONNECT_SAAT_HOME=0; fi
 
-    save_config
-    echo ""
-    echo "  ✅ Config tersimpan!"
-    sleep 1
+    save_config; echo ""; echo "  ✅ Config tersimpan!"; sleep 1
 }
 
 # ─────────────────────────────────────────
@@ -172,8 +169,7 @@ menu_ganti_url() {
     read -r NEW_URL
     if [ -n "$NEW_URL" ]; then
         URL="$NEW_URL"
-        save_config
-        echo -e "\n  ✅ URL diperbarui!"
+        save_config; echo -e "\n  ✅ URL diperbarui!"
     else
         echo -e "\n  Dibatalkan."
     fi
@@ -292,6 +288,7 @@ wait_for_ingame() {
     echo "0" > "$FILE_RECONNECTING"
 }
 
+# 100% KEMBALI KE STRUKTUR SCRIPT AWAL LU YANG WORK AUTO REJOIN NYA
 monitor_disconnect() {
     log "🔍 Monitor DC aktif (PID: $$)"
     echo "0" > "$FILE_IN_BACKGROUND"
@@ -311,37 +308,56 @@ monitor_disconnect() {
             continue
         fi
 
-        # ──────────────────────────────────────────────────────────
-        # 1. CEK FILTER SEMENTARA: JIKA SEDANG HOP MARKET (ABAIKAN)
-        # ──────────────────────────────────────────────────────────
-        NOW=$(date +%s)
-        GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null || echo 0)
-        
+        # BERIKAN MASA AMAN JIKA DELTA MELAKUKAN SERVER HOP MARKET TRADE
         if echo "$line" | grep -qi "Sending disconnect with reason"; then
             if echo "$line" | grep -qiE "teleport|hop|leave|transfer|market|trade"; then 
-                log "🔄 Delta memicu Server Hop ke Market Trade... Berikan Masa Aman!"
-                echo $(( NOW + TELEPORT_GRACE )) > "$FILE_GRACE_UNTIL"
+                log "🔄 Delta terdeteksi Server Hop ke Market Trade! Aktifkan Masa Aman..."
+                echo $(( $(date +%s) + TELEPORT_GRACE )) > "$FILE_GRACE_UNTIL"
                 continue 
             fi
         fi
 
-        # Jikalau masa aman aktif, semua log DC logcat di bawah di-skip total (biar aman pas pindah)
-        if [ "$NOW" -lt "$GRACE" ]; then
-            continue
+        DC_DETECTED=0
+        DC_REASON=""
+
+        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288|kick|shutdown|Connection lost|Lost connection with reason"; then
+            DC_DETECTED=1
+            DC_REASON="Server Shutdown / Pop-up Koneksi Terputus (Error 288)"
         fi
 
-        # ──────────────────────────────────────────────────────────
-        # 2. DETEKSI CRITICAL: KONEKSI TERPUTUS / ERROR 288 / DISCONNECT
-        # ──────────────────────────────────────────────────────────
-        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288|Connection lost|Lost connection with reason|Disconnected from server for reason|shutdown|kick|Sending disconnect with reason"; then
+        if echo "$line" | grep -qi "Disconnected from server for reason"; then
+            DC_DETECTED=1; DC_REASON="Disconnected from server"
+        fi
+
+        if [ "$DC_DETECTED" -eq 1 ]; then
+            if [ "$RECONNECT_OTOMATIS" = "1" ]; then
+                WAIT_TIME=45 
+                log "⚠️ Deteksi DC ($DC_REASON). Menunggu $WAIT_TIME detik..."
+                sleep $WAIT_TIME
+
+                if cek_apakah_terhubung; then
+                    log "✅ Game normal / Hop Delta sukses. Skip Reconnect."
+                    DC_DETECTED=0 
+                    continue
+                fi
+            else
+                # Sesuai settingan lu (0 0 1 0), script awal lu bakal langsung ngelewatin (continue) logcat ini
+                # dan membiarkan loop crash paling bawah yang mengeksekusi rejoin.
+                continue
+            fi
             
-            log "🚨 DETEKSI CRITICAL: Koneksi Terputus / Pop-up 288 Terbaca!"
-            log "♻️ JALUR PRIORITAS: Memaksa Rejoin Kembali ke Private Server Garden..."
-            
-            echo "0" > "$FILE_RECONNECTING"
+            log "❌ Tetap Terputus. Mengembalikan ke Private Server..."
+            NOW=$(date +%s)
+            GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null || echo 0)
+            if [ -n "$GRACE" ] && [ "$NOW" -lt "$GRACE" ]; then continue; fi
+            RECONNECTING=$(cat "$FILE_RECONNECTING")
+            [ "$RECONNECTING" = "1" ] && continue
+
+            log "❌ Eksekusi Rejoin Utama!"
+            echo "$NOW" > "$FILE_LAST_RECONNECT"
+            sleep 5
             join_private_server
             wait_for_ingame
-            continue
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
@@ -440,13 +456,16 @@ while true; do
     if [ "$RESTART_KALAU_CRASH" = "1" ]; then
         if ! ps -A 2>/dev/null | grep -q "$PKG" && ! pidof "$PKG" > /dev/null 2>&1; then
             
-            # Jika sedang Hop Market, tahan/jangan di-force reconnect
+            # ── PROTEKSI UTAMA DI SINI ──
+            # Jika Roblox hilang dari memori TAPI statusnya lagi Server Hop Market (Masa Aman masih aktif)
+            # MAKA dilewati dulu (jangan dianggap crash, jangan direjoin ke private server!)
             if [ "$NOW" -lt "$GRACE" ]; then
                 sleep 5
                 continue
             fi
+            # ────────────────────────────
 
-            log "💥 Roblox crash asli! Restart..."
+            log "💥 Roblox crash! Restart..."
             sleep 3
             join_private_server
             wait_for_ingame
@@ -455,12 +474,12 @@ while true; do
         fi
     fi
 
-    # BACKUP VISUAL SECURE LOGIC
+    # BACKUP VISUAL SECURE LOGIC (Pop-up Terputus/Error 288 Tetap Aman Terbaca)
     if [ "$NOW" -gt "$GRACE" ]; then
         if dumpsys window 2>/dev/null | grep -q "$PKG" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
             sleep 5
             if dumpsys window 2>/dev/null | grep -q "$PKG" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
-                log "⚠️ Terdeteksi pop-up stuck permanen di layar (Visual Check). Force Rejoin!"
+                log "⚠️ Terdeteksi pop-up stuck permanen di layar (Error 288 / Terputus). Force Rejoin!"
                 am force-stop "$PKG"
                 sleep 3
                 join_private_server
