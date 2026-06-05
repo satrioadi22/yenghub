@@ -2,7 +2,7 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 4.5 (HYBRID NETWORK & GRACE FIX - ANTI BEGAL HOP)
+#    Versi: 4.6 (FIX LOOP INPUT & ANTI-BEGAL HOP)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -40,7 +40,7 @@ EOF
 
 default_config() { URL=""; RELOG_SETIAP_JAM=1; RECONNECT_OTOMATIS=1; RESTART_KALAU_CRASH=1; RECONNECT_SAAT_HOME=0; }
 clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
-header() { echo "========================================="; echo "    ROBLOX AUTO RECONNECT v4.5 (FIXED)"; echo "========================================="; }
+header() { echo "========================================="; echo "    ROBLOX AUTO RECONNECT v4.6 (FIXED)"; echo "========================================="; }
 show_toggle() { if [ "$1" = "1" ]; then echo "ON"; else echo "OFF"; fi; }
 
 show_current_config() {
@@ -53,28 +53,49 @@ show_current_config() {
 }
 
 wizard_setup() {
-    clr; header; echo ""
+    clr
+    header
+    echo ""
     while true; do
         echo "  Paste link private server Roblox kamu:"
-        printf "  > " read -r URL
-        [ -n "$URL" ] && break
-        echo "  ⚠ URL tidak boleh kosong!"; echo ""
+        printf "  > "
+        read -r URL
+        if [ -n "$URL" ]; then
+            break
+        fi
+        echo "  ⚠ URL tidak boleh kosong!"
+        echo ""
     done
     RELOG_SETIAP_JAM=1; RECONNECT_OTOMATIS=1; RESTART_KALAU_CRASH=1; RECONNECT_SAAT_HOME=0
-    save_config; echo ""; echo "  ✅ Config tersimpan!"; sleep 1
+    save_config
+    echo ""
+    echo "  ✅ Config tersimpan!"
+    sleep 1
 }
 
 menu_utama() {
     while true; do
-        clr; header; show_current_config
+        clr
+        header
+        show_current_config
         echo "  1) Langsung jalanin"
         echo "  2) Ganti URL private server"
         echo "  3) Keluar"
         echo ""
-        printf "  Pilih (1-3): " read -r PILIHAN
+        printf "  Pilih (1-3): "
+        read -r PILIHAN
         case $PILIHAN in
             1) return 0 ;;
-            2) echo ""; echo "Paste URL baru:"; printf "> "; read -r NEW_URL; [ -n "$NEW_URL" ] && URL="$NEW_URL" && save_config ;;
+            2) 
+                echo ""
+                echo "Paste URL baru:"
+                printf "> "
+                read -r NEW_URL
+                if [ -n "$NEW_URL" ]; then
+                    URL="$NEW_URL"
+                    save_config
+                fi
+                ;;
             3) exit 0 ;;
             *) echo "  ⚠ Pilih angka 1-3"; sleep 1 ;;
         esac
