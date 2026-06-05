@@ -2,7 +2,7 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 3.0 (Spesial Fix Hop Market + Shutdown 288)
+#    Versi: 3.5 (FULL FIX - Hop Market, Shutdown 288 & Loading Loop)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -310,6 +310,8 @@ join_private_server() {
     log "🚀 Join private server Grow a Garden..."
 
     echo "1" > "$FILE_RECONNECTING"
+    
+    # Pasang masa aman 180 detik buat loading render screen awal game
     echo $(( $(date +%s) + TELEPORT_GRACE )) > "$FILE_GRACE_UNTIL"
 
     am force-stop "$PKG"
@@ -388,7 +390,7 @@ monitor_disconnect() {
         
         # LOGIKA DETEKSI 2: Disconnect Client Biasa
         if echo "$line" | grep -qi "Sending disconnect with reason"; then
-            # Filter: Jika terdeteksi Delta lagi melakukan Hop ke Market Trade, ABREK / SKIP!
+            # Filter Hop Delta
             if echo "$line" | grep -qiE "teleport|hop|leave|transfer"; then 
                 log "🔄 Delta sedang melakukan Server Hop ke Market Trade... Biarkan berjalan."
                 continue 
@@ -406,7 +408,7 @@ monitor_disconnect() {
 
         if [ "$DC_DETECTED" -eq 1 ]; then
 
-            # KHUSUS KASUS POP-UP SHUTDOWN (ERROR 288): Langsung bantai Rejoin, gausah pake nunggu delay!
+            # KHUSUS KASUS POP-UP SHUTDOWN (ERROR 288): Langsung Rejoin instan
             if [ "$DC_REASON" = "Server Shutdown / Pop-up Koneksi Terputus (Error 288)" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
                 log "🚨 PERINGATAN: $DC_REASON Terdeteksi di Market Trade!"
                 log "♻️ Menutup paksa game dan kembali masuk ke Private Server Garden..."
@@ -417,14 +419,19 @@ monitor_disconnect() {
                 continue
             fi
 
-            # Delay normal untuk DC kedip biasa / pengecekan sesi (45 detik)
-            WAIT_TIME=45 
-            log "⚠️ Deteksi DC biasa ($DC_REASON). Menunggu $WAIT_TIME detik..."
-            sleep $WAIT_TIME
+            # Hanya jalankan delay tunggu jika RECONNECT_OTOMATIS aktif (bernilai 1)
+            if [ "$RECONNECT_OTOMATIS" = "1" ]; then
+                WAIT_TIME=45 
+                log "⚠️ Deteksi DC biasa ($DC_REASON). Menunggu $WAIT_TIME detik..."
+                sleep $WAIT_TIME
 
-            if cek_apakah_terhubung; then
-                log "✅ Game normal / Hop Delta sukses. Skip Reconnect."
-                DC_DETECTED=0 
+                if cek_apakah_terhubung; then
+                    log "✅ Game normal / Hop Delta sukses. Skip Reconnect."
+                    DC_DETECTED=0 
+                    continue
+                fi
+            else
+                # Jika RECONNECT_OTOMATIS dimatikan (0), abaikan log DC biasa ini
                 continue
             fi
             
@@ -433,7 +440,6 @@ monitor_disconnect() {
             NOW=$(date +%s)
             GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
             if [ -n "$GRACE" ] && [ "$NOW" -lt "$GRACE" ]; then continue; fi
-            [ "$RECONNECT_OTOMATIS" = "0" ] && continue
             RECONNECTING=$(cat "$FILE_RECONNECTING")
             [ "$RECONNECTING" = "1" ] && continue
 
@@ -517,7 +523,7 @@ log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
 log "Reconnect        : DC detection  → $(show_toggle $RECONNECT_OTOMATIS)"
 log "Restart crash    : auto restart  → $(show_toggle $RESTART_KALAU_CRASH)"
-log "Reconnect@home   : saat home     → $(show_toggle $RESTART_KALAU_CRASH)"
+log "Reconnect@home   : saat home     → $(show_toggle $RECONNECT_SAAT_HOME)"
 log "Log file         : $LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 echo ""
@@ -532,6 +538,9 @@ start_monitor
 
 while true; do
 
+    NOW=$(date +%s)
+    GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
+
     if [ "$RESTART_KALAU_CRASH" = "1" ]; then
         if ! ps -A 2>/dev/null | grep -q "$PKG" && ! pidof "$PKG" > /dev/null 2>&1; then
             log "💥 Roblox crash! Restart..."
@@ -543,16 +552,27 @@ while true; do
         fi
     fi
 
-    # BACKUP VISUAL: Deteksi pop-up abu-abu 'Koneksi Terputus' langsung dari window UI
-    if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
-        log "⚠️ Terdeteksi pop-up dialog error di layar (Error 288 / Terputus). Langsung Rejoin!"
-        am force-stop "$PKG"
-        sleep 3
-        join_private_server
-        wait_for_ingame
-        start_monitor
-        continue
+    # ──────────────────────────────────────────────────
+    # BACKUP VISUAL SECURE LOGIC (FIX LOADING LOOP)
+    # ──────────────────────────────────────────────────
+    # Layar cuma dicek setelah masa aman Grace Period (180s) habis
+    if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
+        if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
+            
+            # Double check: Tunggu 5 detik, kalau popup-nya masih ada, berarti beneran stuck Error 288
+            sleep 5
+            if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
+                log "⚠️ Terdeteksi pop-up stuck permanen di layar (Error 288 / Terputus). Force Rejoin!"
+                am force-stop "$PKG"
+                sleep 3
+                join_private_server
+                wait_for_ingame
+                start_monitor
+                continue
+            fi
+        fi
     fi
+    # ──────────────────────────────────────────────────
 
     if check_relog_needed; then
         log "🔄 Relog setiap ${RELOG_SETIAP_JAM} jam..."
@@ -562,7 +582,6 @@ while true; do
         continue
     fi
 
-    NOW=$(date +%s)
     if [ $((NOW - LAST_VERBOSE)) -ge "$VERBOSE_INTERVAL" ]; then
         log "✅ Roblox running"
         LAST_VERBOSE=$NOW
