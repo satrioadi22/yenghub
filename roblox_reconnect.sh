@@ -639,15 +639,28 @@ while true; do
     NOW=$(date +%s)
     GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
 
+    # ── CEK POPUP ERROR 288 — SELALU JALAN MESKIPUN PAUSE AKTIF ──
+    # Harus dicek paling duluan, karena popup 288 bisa muncul kapanpun
+    if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
+        if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
+            sleep 5
+            if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
+                log "⚠️ Pop-up Error 288 terdeteksi! Batalkan pause & Force Rejoin ke Private Server!"
+                echo "0" > "$FILE_PAUSE_UNTIL"
+                am force-stop "$PKG"
+                sleep 3
+                join_private_server
+                wait_for_ingame
+                start_monitor
+                continue
+            fi
+        fi
+    fi
+
     # ── CEK PAUSE DI MAIN LOOP ──
     if is_paused; then
-        SISA=$(sisa_pause)
-
-        # Selama pause aktif, cek apakah Roblox masih jalan
-        # Kalau masih jalan = masih di Market Trade, perpanjang pause otomatis 30 detik
-        # Kalau udah tutup = baru boleh reconnect ke private server
+        # Roblox masih jalan = masih di Market Trade, perpanjang pause otomatis
         if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
-            # Roblox masih jalan (di Market Trade) — perpanjang pause
             NEW_PAUSE=$(( $(date +%s) + 30 ))
             echo "$NEW_PAUSE" > "$FILE_PAUSE_UNTIL"
             if [ $((NOW - LAST_VERBOSE)) -ge 60 ]; then
@@ -655,7 +668,7 @@ while true; do
                 LAST_VERBOSE=$NOW
             fi
         else
-            # Roblox tutup/crash saat di Market Trade — ini baru beneran perlu reconnect
+            # Roblox tutup saat pause = baru boleh rejoin
             log "💥 Roblox tutup saat di Market Trade — Rejoin ke Private Server..."
             echo "0" > "$FILE_PAUSE_UNTIL"
             sleep 3
@@ -668,6 +681,7 @@ while true; do
         continue
     fi
 
+    # ── CEK CRASH BIASA (hanya saat tidak pause) ──
     if [ "$RESTART_KALAU_CRASH" = "1" ]; then
         if ! ps -A 2>/dev/null | grep -q "$PKG" && ! pidof "$PKG" > /dev/null 2>&1; then
             log "💥 Roblox crash! Restart..."
@@ -676,21 +690,6 @@ while true; do
             wait_for_ingame
             start_monitor
             continue
-        fi
-    fi
-
-    if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
-        if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
-            sleep 5
-            if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
-                log "⚠️ Terdeteksi pop-up stuck permanen di layar (Error 288 / Terputus). Force Rejoin!"
-                am force-stop "$PKG"
-                sleep 3
-                join_private_server
-                wait_for_ingame
-                start_monitor
-                continue
-            fi
         fi
     fi
 
