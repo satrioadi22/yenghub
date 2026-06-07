@@ -459,6 +459,14 @@ monitor_disconnect() {
             continue
         fi
 
+        # ── CEK HOP/TELEPORT DULUAN SEBELUM APAPUN ──
+        # Harus paling atas agar tidak tertimpa deteksi shutdown/kick
+        if echo "$line" | grep -qiE "teleport|TeleportService|ServerHop|server hop|ChangingServers|hop|leave|transfer"; then
+            log "🔄 Deteksi Server Hop Delta ke Market Trade — Auto PAUSE 3 menit!"
+            set_pause 3
+            continue
+        fi
+
         DC_DETECTED=0
         DC_REASON=""
 
@@ -468,11 +476,6 @@ monitor_disconnect() {
         fi
 
         if echo "$line" | grep -qi "Sending disconnect with reason"; then
-            if echo "$line" | grep -qiE "teleport|hop|leave|transfer"; then
-                log "🔄 Deteksi Server Hop ke Market Trade — Auto PAUSE 3 menit!"
-                set_pause 3
-                continue
-            fi
             DC_DETECTED=1
             DC_REASON="Sending disconnect (Logcat Client)"
         fi
@@ -539,7 +542,7 @@ monitor_disconnect() {
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
-        "Sending disconnect with reason|Connection lost|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick")
+        "Sending disconnect with reason|Connection lost|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|teleport|TeleportService|ServerHop|server hop|ChangingServers|hop|leave|transfer")
 }
 
 start_monitor() {
@@ -607,7 +610,7 @@ echo "0" > "$FILE_PAUSE_UNTIL"
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
 echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
-echo "    Versi 3.6 (+ Pause Market Trade)"      | tee -a "$LOG_FILE"
+echo "    Versi 3.7 (+ Auto Pause Market Trade)"   | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
