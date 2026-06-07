@@ -642,10 +642,28 @@ while true; do
     # ── CEK PAUSE DI MAIN LOOP ──
     if is_paused; then
         SISA=$(sisa_pause)
-        if [ $((NOW - LAST_VERBOSE)) -ge 60 ]; then
-            log "⏸️ PAUSE aktif — sisa ${SISA} detik — reconnect dinonaktifkan"
-            LAST_VERBOSE=$NOW
+
+        # Selama pause aktif, cek apakah Roblox masih jalan
+        # Kalau masih jalan = masih di Market Trade, perpanjang pause otomatis 30 detik
+        # Kalau udah tutup = baru boleh reconnect ke private server
+        if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
+            # Roblox masih jalan (di Market Trade) — perpanjang pause
+            NEW_PAUSE=$(( $(date +%s) + 30 ))
+            echo "$NEW_PAUSE" > "$FILE_PAUSE_UNTIL"
+            if [ $((NOW - LAST_VERBOSE)) -ge 60 ]; then
+                log "⏸️ PAUSE aktif — Roblox masih jalan di Market Trade — reconnect ditahan"
+                LAST_VERBOSE=$NOW
+            fi
+        else
+            # Roblox tutup/crash saat di Market Trade — ini baru beneran perlu reconnect
+            log "💥 Roblox tutup saat di Market Trade — Rejoin ke Private Server..."
+            echo "0" > "$FILE_PAUSE_UNTIL"
+            sleep 3
+            join_private_server
+            wait_for_ingame
+            start_monitor
         fi
+
         sleep "$CHECK_INTERVAL"
         continue
     fi
