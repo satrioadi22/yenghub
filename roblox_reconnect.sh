@@ -667,13 +667,26 @@ while true; do
                 LAST_VERBOSE=$NOW
             fi
         else
-            # Roblox tutup saat pause = baru boleh rejoin
-            log "💥 Roblox tutup saat di Market Trade — Rejoin ke Private Server..."
-            echo "0" > "$FILE_PAUSE_UNTIL"
-            sleep 3
-            join_private_server
-            wait_for_ingame
-            start_monitor
+            # Roblox tutup saat pause aktif
+            # Tunggu dulu 20 detik — mungkin Hydra lagi restart Roblox untuk hop
+            log "⚠️ Roblox tutup saat PAUSE aktif — tunggu 20 detik dulu (mungkin Hydra hop)..."
+            sleep 20
+
+            # Cek lagi setelah tunggu
+            if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
+                # Roblox hidup lagi = Hydra berhasil hop, perpanjang pause
+                log "✅ Roblox hidup lagi — Hydra hop sukses, pause diperpanjang."
+                NEW_PAUSE=$(( $(date +%s) + 30 ))
+                echo "$NEW_PAUSE" > "$FILE_PAUSE_UNTIL"
+            else
+                # Roblox beneran tutup = rejoin ke private server
+                log "💥 Roblox beneran tutup saat di Market Trade — Rejoin ke Private Server..."
+                echo "0" > "$FILE_PAUSE_UNTIL"
+                sleep 3
+                join_private_server
+                wait_for_ingame
+                start_monitor
+            fi
         fi
 
         sleep "$CHECK_INTERVAL"
