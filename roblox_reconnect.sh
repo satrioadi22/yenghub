@@ -638,23 +638,9 @@ while true; do
     NOW=$(date +%s)
     GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
 
-    # ── CEK POPUP ERROR 288 — SELALU JALAN MESKIPUN PAUSE AKTIF ──
-    # Harus dicek paling duluan, karena popup 288 bisa muncul kapanpun
-    if [ -z "$GRACE" ] || [ "$NOW" -gt "$GRACE" ]; then
-        if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
-            sleep 5
-            if dumpsys window 2>/dev/null | grep -q "com.roblox.client" && dumpsys window 2>/dev/null | grep -qiE "popup|dialog|error"; then
-                log "⚠️ Pop-up Error 288 terdeteksi! Batalkan pause & Force Rejoin ke Private Server!"
-                echo "0" > "$FILE_PAUSE_UNTIL"
-                am force-stop "$PKG"
-                sleep 3
-                join_private_server
-                wait_for_ingame
-                start_monitor
-                continue
-            fi
-        fi
-    fi
+    # ── CEK POPUP ERROR 288 VIA DUMPSYS — DINONAKTIFKAN ──
+    # Terbukti false positive di cloud emulator (deteksi dialog/notif biasa sebagai Error 288)
+    # Deteksi Error 288 sepenuhnya ditangani oleh logcat monitor di atas
 
     # ── CEK PAUSE DI MAIN LOOP ──
     if is_paused; then
