@@ -460,7 +460,7 @@ monitor_disconnect() {
         fi
 
         # ── CEK HOP/TELEPORT DULUAN SEBELUM APAPUN ──
-        if echo "$line" | grep -qiE "teleport|TeleportService|ServerHop|server hop|ChangingServers|hop|leave|transfer"; then
+        if echo "$line" | grep -qiE "teleport|TeleportService|ServerHop|server hop|ChangingServers"; then
             log "🔄 Deteksi Server Hop Delta ke Market Trade — Auto PAUSE 3 menit!"
             set_pause 3
             continue
@@ -469,8 +469,8 @@ monitor_disconnect() {
         DC_DETECTED=0
         DC_REASON=""
 
-        # Deteksi Error 288 & shutdown — keyword diperluas dari logcat
-        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288|kick|shutdown|Connection lost|stop\(\) called|Connection refused|Disconnected - stop"; then
+        # Deteksi Error 288 — pakai keyword ASLI dari logcat
+        if echo "$line" | grep -qiE "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Error code: 288|Disconnect error: 288|shutdown|kick"; then
             DC_DETECTED=1
             DC_REASON="Error288"
         fi
@@ -489,10 +489,10 @@ monitor_disconnect() {
 
         if [ "$DC_DETECTED" -eq 1 ]; then
 
-            # Error 288 / stop() called = langsung rejoin, bypass pause
+            # Error 288 = bypass pause, langsung rejoin
             if [ "$DC_REASON" = "Error288" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
-                log "🚨 Koneksi Terputus (Error 288 / stop() called) — Force Rejoin ke Private Server!"
-                echo "0" > "$FILE_PAUSE_UNTIL"   # batalkan pause
+                log "🚨 Koneksi Terputus (Error 288) — Force Rejoin ke Private Server!"
+                echo "0" > "$FILE_PAUSE_UNTIL"
                 echo "0" > "$FILE_RECONNECTING"
                 join_private_server
                 wait_for_ingame
@@ -541,7 +541,7 @@ monitor_disconnect() {
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
-        "Sending disconnect with reason|Connection lost|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|stop\(\) called|Connection refused|Disconnected - stop|teleport|TeleportService|ServerHop|server hop|ChangingServers|hop|leave|transfer")
+        "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Sending disconnect with reason|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|teleport|TeleportService|ServerHop|server hop|ChangingServers")
 }
 
 start_monitor() {
