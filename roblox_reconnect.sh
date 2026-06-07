@@ -460,7 +460,6 @@ monitor_disconnect() {
         fi
 
         # ── CEK HOP/TELEPORT DULUAN SEBELUM APAPUN ──
-        # Harus paling atas agar tidak tertimpa deteksi shutdown/kick
         if echo "$line" | grep -qiE "teleport|TeleportService|ServerHop|server hop|ChangingServers|hop|leave|transfer"; then
             log "🔄 Deteksi Server Hop Delta ke Market Trade — Auto PAUSE 3 menit!"
             set_pause 3
@@ -470,9 +469,10 @@ monitor_disconnect() {
         DC_DETECTED=0
         DC_REASON=""
 
-        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288|kick|shutdown|Connection lost"; then
+        # Deteksi Error 288 & shutdown — keyword diperluas dari logcat
+        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288|kick|shutdown|Connection lost|stop\(\) called|Connection refused|Disconnected - stop"; then
             DC_DETECTED=1
-            DC_REASON="Server Shutdown / Pop-up Koneksi Terputus (Error 288)"
+            DC_REASON="Error288"
         fi
 
         if echo "$line" | grep -qi "Sending disconnect with reason"; then
@@ -489,20 +489,20 @@ monitor_disconnect() {
 
         if [ "$DC_DETECTED" -eq 1 ]; then
 
-            # CEK PAUSE LAGI SEBELUM EKSEKUSI RECONNECT
-            if is_paused; then
-                SISA=$(sisa_pause)
-                log "⏸️ DC terdeteksi ($DC_REASON) tapi PAUSE aktif (sisa ${SISA}s) — skip reconnect."
-                continue
-            fi
-
-            if [ "$DC_REASON" = "Server Shutdown / Pop-up Koneksi Terputus (Error 288)" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
-                log "🚨 PERINGATAN: $DC_REASON Terdeteksi di Market Trade!"
-                log "♻️ Menutup paksa game dan kembali masuk ke Private Server Garden..."
-
+            # Error 288 / stop() called = langsung rejoin, bypass pause
+            if [ "$DC_REASON" = "Error288" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
+                log "🚨 Koneksi Terputus (Error 288 / stop() called) — Force Rejoin ke Private Server!"
+                echo "0" > "$FILE_PAUSE_UNTIL"   # batalkan pause
                 echo "0" > "$FILE_RECONNECTING"
                 join_private_server
                 wait_for_ingame
+                continue
+            fi
+
+            # DC biasa — cek pause dulu
+            if is_paused; then
+                SISA=$(sisa_pause)
+                log "⏸️ DC terdeteksi ($DC_REASON) tapi PAUSE aktif (sisa ${SISA}s) — skip reconnect."
                 continue
             fi
 
@@ -511,7 +511,6 @@ monitor_disconnect() {
                 log "⚠️ Deteksi DC biasa ($DC_REASON). Menunggu $WAIT_TIME detik..."
                 sleep $WAIT_TIME
 
-                # Cek pause lagi setelah 45 detik tunggu
                 if is_paused; then
                     log "⏸️ PAUSE aktif setelah tunggu — skip reconnect."
                     continue
@@ -542,7 +541,7 @@ monitor_disconnect() {
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
-        "Sending disconnect with reason|Connection lost|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|teleport|TeleportService|ServerHop|server hop|ChangingServers|hop|leave|transfer")
+        "Sending disconnect with reason|Connection lost|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|stop\(\) called|Connection refused|Disconnected - stop|teleport|TeleportService|ServerHop|server hop|ChangingServers|hop|leave|transfer")
 }
 
 start_monitor() {
