@@ -460,8 +460,8 @@ monitor_disconnect() {
         fi
 
         # ── CEK HOP/TELEPORT DULUAN SEBELUM APAPUN ──
-        if echo "$line" | grep -qiE "teleport|TeleportService|ServerHop|server hop|ChangingServers"; then
-            log "🔄 Deteksi Server Hop Delta ke Market Trade — Auto PAUSE 3 menit!"
+        if echo "$line" | grep -qiE "teleport|TeleportService|ServerHop|server hop|ChangingServers|doTeleport|finishTeleportWithJoinScriptPayload|SessionTransitionFSM.*Teleported|HydraHub|Hydra.*Loaded"; then
+            log "🔄 Deteksi Hop (Hydra/Delta) — Auto PAUSE 3 menit!"
             set_pause 3
             continue
         fi
@@ -541,7 +541,7 @@ monitor_disconnect() {
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
-        "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Sending disconnect with reason|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|teleport|TeleportService|ServerHop|server hop|ChangingServers")
+        "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Sending disconnect with reason|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|teleport|TeleportService|ServerHop|server hop|ChangingServers|doTeleport|finishTeleportWithJoinScriptPayload|SessionTransitionFSM|HydraHub|Hydra.*Loaded")
 }
 
 start_monitor() {
