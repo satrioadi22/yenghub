@@ -2,7 +2,7 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 3.7 (+ Auto Pause 3 menit saat deteksi Market Trade Hop)
+#    Versi: 3.8 (+ Fix Error 288 di Market Trade)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -16,7 +16,8 @@ FILE_IN_BACKGROUND="$STATE_DIR/in_background"
 FILE_LAST_RELOG="$STATE_DIR/last_relog"
 FILE_RECONNECTING="$STATE_DIR/reconnecting"
 FILE_GRACE_UNTIL="$STATE_DIR/grace_until"
-FILE_PAUSE_UNTIL="$STATE_DIR/pause_until"   # <-- BARU: file pause manual
+FILE_PAUSE_UNTIL="$STATE_DIR/pause_until"
+FILE_FORCE_REJOIN="$STATE_DIR/force_rejoin"   # <-- BARU v3.8
 
 RECONNECT_COOLDOWN=45
 TELEPORT_GRACE=180
@@ -66,7 +67,7 @@ default_config() {
 }
 
 # ─────────────────────────────────────────
-#    FUNGSI PAUSE RECONNECT (BARU)
+#    FUNGSI PAUSE RECONNECT
 # ─────────────────────────────────────────
 
 is_paused() {
@@ -106,7 +107,7 @@ clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 header() {
     echo "========================================="
     echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"
-    echo "    Versi 3.7 (+ Auto Pause Market Trade)"
+    echo "    Versi 3.8 (+ Fix Error 288 Market Trade)"
     echo "========================================="
 }
 
@@ -224,7 +225,7 @@ menu_utama() {
 }
 
 # ─────────────────────────────────────────
-#    MENU PAUSE (BARU)
+#    MENU PAUSE
 # ─────────────────────────────────────────
 
 menu_pause() {
@@ -439,12 +440,8 @@ monitor_disconnect() {
 
     while read -r line; do
 
-        # ── CEK PAUSE DULU SEBELUM PROSES APAPUN ──
-        if is_paused; then
-            SISA=$(sisa_pause)
-            # Log setiap 30 detik supaya tidak spam
-            continue
-        fi
+        # ── CEK PAUSE DULU — tapi skip jika ini teleport biasa ──
+        # (Error 288 tetap diproses meski pause aktif)
 
         if echo "$line" | grep -qi "foregroundActivities=false" && echo "$line" | grep -q "com.roblox.client"; then
             echo "1" > "$FILE_IN_BACKGROUND"
@@ -469,7 +466,7 @@ monitor_disconnect() {
         DC_DETECTED=0
         DC_REASON=""
 
-        # Deteksi Error 288 — pakai keyword ASLI dari logcat
+        # Deteksi Error 288
         if echo "$line" | grep -qiE "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Error code: 288|Disconnect error: 288|shutdown|kick"; then
             DC_DETECTED=1
             DC_REASON="Error288"
@@ -489,17 +486,22 @@ monitor_disconnect() {
 
         if [ "$DC_DETECTED" -eq 1 ]; then
 
-            # Error 288 = bypass pause, langsung rejoin
+            # ── ERROR 288 / LOST CONNECTION = SELALU FORCE REJOIN ──
+            # Bypass pause apapun, baik di private server maupun Market Trade
             if [ "$DC_REASON" = "Error288" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
                 log "🚨 Koneksi Terputus (Error 288) — Force Rejoin ke Private Server!"
+                log "   (Bypass pause jika aktif — error ini prioritas tertinggi)"
                 echo "0" > "$FILE_PAUSE_UNTIL"
                 echo "0" > "$FILE_RECONNECTING"
+                echo "1" > "$FILE_FORCE_REJOIN"   # set flag untuk main loop (double protection)
+                sleep 3
                 join_private_server
                 wait_for_ingame
+                echo "0" > "$FILE_FORCE_REJOIN"   # clear flag setelah rejoin
                 continue
             fi
 
-            # DC biasa — cek pause dulu
+            # ── DC BIASA — CEK PAUSE DULU ──
             if is_paused; then
                 SISA=$(sisa_pause)
                 log "⏸️ DC terdeteksi ($DC_REASON) tapi PAUSE aktif (sisa ${SISA}s) — skip reconnect."
@@ -538,6 +540,7 @@ monitor_disconnect() {
             sleep 5
             join_private_server
             wait_for_ingame
+
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
@@ -605,11 +608,12 @@ echo "0" > "$FILE_IN_BACKGROUND"
 echo "$(date +%s)" > "$FILE_LAST_RELOG"
 echo "0" > "$FILE_RECONNECTING"
 echo "0" > "$FILE_PAUSE_UNTIL"
+echo "0" > "$FILE_FORCE_REJOIN"   # <-- init flag baru v3.8
 
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
 echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
-echo "    Versi 3.7 (+ Auto Pause Market Trade)"   | tee -a "$LOG_FILE"
+echo "    Versi 3.8 (+ Fix Error 288 Market Trade)" | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
@@ -638,9 +642,18 @@ while true; do
     NOW=$(date +%s)
     GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
 
-    # ── CEK POPUP ERROR 288 VIA DUMPSYS — DINONAKTIFKAN ──
-    # Terbukti false positive di cloud emulator (deteksi dialog/notif biasa sebagai Error 288)
-    # Deteksi Error 288 sepenuhnya ditangani oleh logcat monitor di atas
+    # ── CEK FORCE REJOIN FLAG (dari monitor — double protection) ──
+    FORCE_REJOIN=$(cat "$FILE_FORCE_REJOIN" 2>/dev/null)
+    if [ "$FORCE_REJOIN" = "1" ]; then
+        log "🚨 Force rejoin flag aktif di main loop — eksekusi rejoin!"
+        echo "0" > "$FILE_PAUSE_UNTIL"
+        echo "0" > "$FILE_FORCE_REJOIN"
+        sleep 3
+        join_private_server
+        wait_for_ingame
+        start_monitor
+        continue
+    fi
 
     # ── CEK PAUSE DI MAIN LOOP ──
     if is_paused; then
