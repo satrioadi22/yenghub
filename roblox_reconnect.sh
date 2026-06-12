@@ -26,7 +26,7 @@ FILE_PAUSE_UNTIL="$STATE_DIR/pause_until"
 FILE_FORCE_REJOIN="$STATE_DIR/force_rejoin"
 FILE_LAST_HOP="$STATE_DIR/last_hop"
 
-HOP_GRACE=20        # detik — error 288 dalam window ini setelah hop = diabaikan
+HOP_GRACE=60        # detik — error 288 dalam window ini setelah hop = diabaikan
 MT_CHECK_DELAY=5    # detik — delay cek apakah Roblox masih jalan saat error 288 + pause
 
 RECONNECT_COOLDOWN=45
