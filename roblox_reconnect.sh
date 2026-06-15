@@ -2,11 +2,11 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 4.2 (Fix Hop Deteksi & Lobby Stuck)
+#    Versi: 4.3 (Fix Hop Disconnect & Lobby)
 #
-#    CHANGELOG v4.2:
+#    CHANGELOG v4.3:
 #    - Fix salah detek saat mau Hop ke Market Trade 
-#      (kata "shutdown/kick" dipindah ke DC biasa 45s)
+#      (Client:Disconnect dipindah ke DC biasa 45s agar tidak instant rejoin)
 #    - Fix Stuck di Lobby: Auto rejoin kalau nyangkut di menu Roblox
 #    - Fix false positive Market Trade (v4.0)
 # ─────────────────────────────────────────
@@ -122,7 +122,7 @@ is_error288_from_hop() {
 }
 
 # ─────────────────────────────────────────
-#    FUNGSI CEK LOBBY (TAMBAHAN v4.1)
+#    FUNGSI CEK LOBBY
 # ─────────────────────────────────────────
 
 is_in_lobby() {
@@ -130,14 +130,14 @@ is_in_lobby() {
     CURRENT_ACT=$(dumpsys activity activities 2>/dev/null | grep "mResumedActivity" | grep "$PKG")
     
     if [ -z "$CURRENT_ACT" ]; then
-        return 1 # App tidak di foreground
+        return 1 
     fi
     
     if echo "$CURRENT_ACT" | grep -qiE "GameActivity|UnityPlayerActivity|UnityPlayer"; then
-        return 1 # Masih di dalam game
+        return 1 
     fi
     
-    return 0 # Di lobby/menu utama
+    return 0 
 }
 
 # ─────────────────────────────────────────
@@ -149,7 +149,7 @@ clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 header() {
     echo "========================================="
     echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"
-    echo "    Versi 4.2 (Fix Hop & Market Trade)"
+    echo "    Versi 4.3 (Fix Hop DC & Market Trade)"
     echo "========================================="
 }
 
@@ -507,16 +507,12 @@ monitor_disconnect() {
         DC_DETECTED=0
         DC_REASON=""
 
-        # V4.2 FIX: "shutdown" dan "kick" dipindah dari sini ke blok DC biasa 
-        # agar tidak salah detek saat mau teleport/hop
-        if echo "$line" | grep -qiE "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Error code: 288|Disconnect error: 288"; then
+        # V4.3 FIX: HANYA "Error code: 288" & "Disconnect error: 288" yang Instant Rejoin.
+        # Kata "Client:Disconnect", "NetworkClient:Remove", "shutdown", dll dipindah ke bawah 
+        # biar masuk ke delay 45 detik (tidak langsung rejoin saat baru aja hop)
+        if echo "$line" | grep -qiE "Error code: 288|Disconnect error: 288"; then
             DC_DETECTED=1
             DC_REASON="Error288"
-        fi
-
-        if echo "$line" | grep -qi "Sending disconnect with reason"; then
-            DC_DETECTED=1
-            DC_REASON="Sending disconnect (Logcat Client)"
         fi
 
         if echo "$line" | grep -qi "Lost connection with reason"; then
@@ -524,15 +520,20 @@ monitor_disconnect() {
             DC_REASON="Lost connection with reason"
         fi
 
+        if echo "$line" | grep -qi "Sending disconnect with reason"; then
+            DC_DETECTED=1
+            DC_REASON="Sending disconnect (Logcat Client)"
+        fi
+
         if echo "$line" | grep -qi "Disconnected from server for reason"; then
             DC_DETECTED=1
             DC_REASON="Disconnected from server"
         fi
 
-        # V4.2 FIX: "shutdown" dan "kick" sekarang masuk ke DC biasa (nunggu 45 detik)
-        if echo "$line" | grep -qiE "shutdown|kick"; then
+        # V4.3: Client Disconnect & Shutdown sekarang masuk DC Biasa
+        if echo "$line" | grep -qiE "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|shutdown|kick"; then
             DC_DETECTED=1
-            DC_REASON="Shutdown/Kick"
+            DC_REASON="Client Disconnect / Shutdown"
         fi
 
         if [ "$DC_DETECTED" -eq 1 ]; then
@@ -575,7 +576,7 @@ monitor_disconnect() {
             fi
 
             # ══════════════════════════════════════════════════
-            #  BLOK DC BIASA (Termasuk Shutdown/Kick v4.2)
+            #  BLOK DC BIASA (Nunggu 45 detik dulu)
             # ══════════════════════════════════════════════════
 
             # Cek pause dulu
@@ -691,7 +692,7 @@ echo "0" > "$FILE_LAST_HOP"
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
 echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
-echo "    Versi 4.2 (Fix Hop & Market Trade)"    | tee -a "$LOG_FILE"
+echo "    Versi 4.3 (Fix Hop DC & Market Trade)" | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
@@ -740,7 +741,7 @@ while true; do
     if is_paused; then
         if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
             
-            # TAMBAHAN v4.1: Cek apakah user kena kick ke lobby saat PAUSE
+            # Cek apakah user kena kick ke lobby saat PAUSE
             if is_in_lobby; then
                 log "🏠 Terdeteksi di LOBBY saat PAUSE aktif! Mungkin kena kick dari Market. Reset pause & Auto Rejoin..."
                 echo "0" > "$FILE_PAUSE_UNTIL"
@@ -779,7 +780,7 @@ while true; do
         continue
     fi
 
-    # ── CEK STUCK DI LOBBY (TAMBAHAN v4.1) ──
+    # ── CEK STUCK DI LOBBY ──
     if cek_apakah_terhubung; then
         if is_in_lobby; then
             TIME_SINCE_LAST_RELOG=$(( NOW - $(cat "$FILE_LAST_RELOG" 2>/dev/null || echo 0) ))
