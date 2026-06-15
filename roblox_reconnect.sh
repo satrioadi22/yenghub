@@ -2,12 +2,13 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 4.1 (Fix Lobby Stuck + Market Trade)
+#    Versi: 4.2 (Fix Hop Deteksi & Lobby Stuck)
 #
-#    CHANGELOG v4.1:
-#    - Fix Stuck di Lobby: Jika berada di menu utama Roblox (Lobby),
-#      PAUSE akan otomatis dibatalkan dan langsung rejoin ke Private Server.
-#    - Fix false positive Market Trade (dari v4.0 tetap dipertahankan).
+#    CHANGELOG v4.2:
+#    - Fix salah detek saat mau Hop ke Market Trade 
+#      (kata "shutdown/kick" dipindah ke DC biasa 45s)
+#    - Fix Stuck di Lobby: Auto rejoin kalau nyangkut di menu Roblox
+#    - Fix false positive Market Trade (v4.0)
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -125,7 +126,6 @@ is_error288_from_hop() {
 # ─────────────────────────────────────────
 
 is_in_lobby() {
-    # Cek melalui dumpsys activity (script jalan sebagai root)
     local CURRENT_ACT
     CURRENT_ACT=$(dumpsys activity activities 2>/dev/null | grep "mResumedActivity" | grep "$PKG")
     
@@ -133,13 +133,11 @@ is_in_lobby() {
         return 1 # App tidak di foreground
     fi
     
-    # Kalau ada keyword Game/Unity, berarti lagi di dalem game
     if echo "$CURRENT_ACT" | grep -qiE "GameActivity|UnityPlayerActivity|UnityPlayer"; then
-        return 1 
+        return 1 # Masih di dalam game
     fi
     
-    # Kalau Roblox di foreground tapi BUKAN di activity Game, berarti di lobby/menu utama
-    return 0
+    return 0 # Di lobby/menu utama
 }
 
 # ─────────────────────────────────────────
@@ -151,7 +149,7 @@ clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 header() {
     echo "========================================="
     echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"
-    echo "    Versi 4.1 (Fix Lobby & Market Trade)"
+    echo "    Versi 4.2 (Fix Hop & Market Trade)"
     echo "========================================="
 }
 
@@ -509,7 +507,9 @@ monitor_disconnect() {
         DC_DETECTED=0
         DC_REASON=""
 
-        if echo "$line" | grep -qiE "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Error code: 288|Disconnect error: 288|shutdown|kick"; then
+        # V4.2 FIX: "shutdown" dan "kick" dipindah dari sini ke blok DC biasa 
+        # agar tidak salah detek saat mau teleport/hop
+        if echo "$line" | grep -qiE "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Error code: 288|Disconnect error: 288"; then
             DC_DETECTED=1
             DC_REASON="Error288"
         fi
@@ -529,25 +529,26 @@ monitor_disconnect() {
             DC_REASON="Disconnected from server"
         fi
 
+        # V4.2 FIX: "shutdown" dan "kick" sekarang masuk ke DC biasa (nunggu 45 detik)
+        if echo "$line" | grep -qiE "shutdown|kick"; then
+            DC_DETECTED=1
+            DC_REASON="Shutdown/Kick"
+        fi
+
         if [ "$DC_DETECTED" -eq 1 ]; then
 
             # ══════════════════════════════════════════════════
-            #  BLOK ERROR 288 / LOST CONNECTION
+            #  BLOK ERROR 288 / LOST CONNECTION (Instant Rejoin)
             # ══════════════════════════════════════════════════
             if [ "$DC_REASON" = "Error288" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
 
-                # [1] Kalau error 288 muncul dalam HOP_GRACE detik setelah hop
-                #     = disconnect normal saat teleport → skip
+                # [1] Kalau error 288 muncul dalam HOP_GRACE detik setelah hop = skip
                 if is_error288_from_hop; then
                     log "ℹ️  Error 288 dalam window hop (${HOP_GRACE}s) — normal saat teleport, diabaikan."
                     continue
                 fi
 
                 # [2] ── FIX v4.0 ──
-                #     Kalau PAUSE aktif (misal lagi di Market Trade):
-                #     Cek dulu apakah Roblox masih beneran jalan.
-                #     Kalau masih jalan = false positive dari UI/input Market Trade → skip
-                #     Kalau Roblox mati = DC beneran → tetap rejoin
                 if is_paused; then
                     log "⚠️  Error 288 terdeteksi, tapi PAUSE aktif — cek apakah Roblox masih jalan..."
                     sleep "$MT_CHECK_DELAY"
@@ -559,11 +560,10 @@ monitor_disconnect() {
                     else
                         log "💥 Roblox mati saat PAUSE aktif — ini DC beneran! Reset pause & force rejoin."
                         echo "0" > "$FILE_PAUSE_UNTIL"
-                        # lanjut ke blok rejoin di bawah
                     fi
                 fi
 
-                # [3] Error 288 beneran (di luar hop & di luar Market Trade pause) → force rejoin
+                # [3] Error 288 beneran → force rejoin
                 log "🚨 Koneksi Terputus (Error 288) — Force Rejoin ke Private Server!"
                 echo "0" > "$FILE_RECONNECTING"
                 echo "1" > "$FILE_FORCE_REJOIN"
@@ -575,7 +575,7 @@ monitor_disconnect() {
             fi
 
             # ══════════════════════════════════════════════════
-            #  BLOK DC BIASA (bukan error 288)
+            #  BLOK DC BIASA (Termasuk Shutdown/Kick v4.2)
             # ══════════════════════════════════════════════════
 
             # Cek pause dulu
@@ -691,7 +691,7 @@ echo "0" > "$FILE_LAST_HOP"
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
 echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
-echo "    Versi 4.1 (Fix Lobby & Market Trade)"  | tee -a "$LOG_FILE"
+echo "    Versi 4.2 (Fix Hop & Market Trade)"    | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
