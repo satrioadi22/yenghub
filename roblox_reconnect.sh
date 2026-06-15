@@ -1,14 +1,18 @@
+Berikut adalah keseluruhan kode script yang sudah diperbaiki secara total. Masalah *looping* terus-menerus akibat salah deteksi saat Roblox pertama kali meluncur (`com.roblox.client/.MainActivity`) sudah diatasi dengan menambahkan pengecekan status `$RECONNECTING`.
+
+Anda tinggal menyalin (copy) seluruh kode di bawah ini, lalu *paste* ke file script Anda di Termux.
+
+```bash
 #!/data/data/com.termux/files/usr/bin/bash
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 4.1 (Fix Market Trade & Lobby Stuck)
+#    Versi: 4.2 (Fix Loop Force Rejoin & MainActivity)
 #
-#    CHANGELOG v4.1:
-#    - Fix Error 288 saat Market Trade: Cek apakah user terlempar ke lobby.
-#      Jika di lobby = langsung rejoin. Jika masih di game = diabaikan.
-#    - Fix Stuck di Lobby: Deteksi jika Roblox nyala tapi di menu utama,
-#      script akan otomatis rejoin ke private server.
+#    CHANGELOG v4.2:
+#    - Fix Bug Loop Force Rejoin: Deteksi MainActivity diabaikan jika
+#      status script sedang dalam proses reconnecting ($FILE_RECONNECTING = 1).
+#    - Mencegah salah deteksi "Stuck di Lobby" saat Roblox baru pertama kali dibuka.
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -152,7 +156,7 @@ clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 header() {
     echo "========================================="
     echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"
-    echo "    Versi 4.1 (Fix Market Trade & Lobby)"
+    echo "    Versi 4.2 (Fix Loop Force Rejoin)"
     echo "========================================="
 }
 
@@ -506,8 +510,15 @@ monitor_disconnect() {
             continue
         fi
 
-        # ── DETEKSI MASUK LOBBY / MENU UTAMA (v4.1) ──
+        # ── DETEKSI MASUK LOBBY / MENU UTAMA (v4.2 PERBAIKAN) ──
         if echo "$line" | grep -qiE "LeaveGame|ReturnedToMenu|MainMenu|GameDisconnected|Displayed com.roblox.client.*MainActivity"; then
+            
+            # Abaikan deteksi lobby jika status sedang dalam proses meluncurkan server/reconnecting awal
+            local IS_RC; IS_RC=$(cat "$FILE_RECONNECTING" 2>/dev/null)
+            if [ "$IS_RC" = "1" ]; then
+                continue
+            fi
+
             if is_paused; then
                 log "🚨 Deteksi masuk LOBBY saat PAUSE aktif! Kick dari Market Trade? Reset pause & rejoin."
                 echo "0" > "$FILE_PAUSE_UNTIL"
@@ -558,8 +569,8 @@ monitor_disconnect() {
                 fi
 
                 # [2] ── FIX v4.1 ──
-                #     Kalau PAUSE aktif (misal lagi di Market Trade):
-                #     Cek apakah user udah ke lobby atau masih di game.
+                #      Kalau PAUSE aktif (misal lagi di Market Trade):
+                #      Cek apakah user udah ke lobby atau masih di game.
                 if is_paused; then
                     log "⚠️  Error 288 terdeteksi saat PAUSE aktif — cek posisi app..."
                     sleep "$MT_CHECK_DELAY"
@@ -570,7 +581,7 @@ monitor_disconnect() {
                         echo "1" > "$FILE_FORCE_REJOIN"
                         # Lanjut ke bawah agar force rejoin tereksekusi
                     elif cek_apakah_terhubung; then
-                        SISA=$(sisa_pause)
+                        local SISA; SISA=$(sisa_pause)
                         log "✅ Roblox masih di game (sisa pause ${SISA}s) — false positive Market Trade, diabaikan."
                         continue
                     else
@@ -597,7 +608,7 @@ monitor_disconnect() {
 
             # Cek pause dulu
             if is_paused; then
-                SISA=$(sisa_pause)
+                local SISA; SISA=$(sisa_pause)
                 log "⏸️ DC terdeteksi ($DC_REASON) tapi PAUSE aktif (sisa ${SISA}s) — skip reconnect."
                 continue
             fi
@@ -708,10 +719,10 @@ echo "0" > "$FILE_LAST_HOP"
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
 echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
-echo "    Versi 4.1 (Fix Market Trade & Lobby)"  | tee -a "$LOG_FILE"
+echo "    Versi 4.2 (Fix Loop Force Rejoin)"  | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 log "URL              : $URL"
-log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
+log "Relog            : setiap ${RELOG_SETIAP_JAM} jam     → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
 log "Reconnect        : DC detection  → $(show_toggle $RECONNECT_OTOMATIS)"
 log "Restart crash    : auto restart  → $(show_toggle $RESTART_KALAU_CRASH)"
 log "Reconnect@home   : saat home     → $(show_toggle $RECONNECT_SAAT_HOME)"
@@ -838,3 +849,5 @@ while true; do
 
     sleep "$CHECK_INTERVAL"
 done
+
+```
