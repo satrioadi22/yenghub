@@ -1,8 +1,3 @@
-Berikut adalah keseluruhan kode script yang sudah diperbaiki secara total. Masalah *looping* terus-menerus akibat salah deteksi saat Roblox pertama kali meluncur (`com.roblox.client/.MainActivity`) sudah diatasi dengan menambahkan pengecekan status `$RECONNECTING`.
-
-Anda tinggal menyalin (copy) seluruh kode di bawah ini, lalu *paste* ke file script Anda di Termux.
-
-```bash
 #!/data/data/com.termux/files/usr/bin/bash
 
 # ─────────────────────────────────────────
@@ -849,5 +844,3 @@ while true; do
 
     sleep "$CHECK_INTERVAL"
 done
-
-```
