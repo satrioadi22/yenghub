@@ -2,12 +2,12 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 4.0 + Lobby Stuck Fix
+#    Versi: 4.1 (Fix Lobby Stuck + Market Trade)
 #
-#    CHANGELOG:
-#    - Versi 4.0: Fix false positive Market Trade (TIDAK DIUBAH)
-#    - Tambahan: Deteksi otomatis jika Roblox nyangkut di 
-#      menu utama (Lobby) dan auto rejoin ke private server.
+#    CHANGELOG v4.1:
+#    - Fix Stuck di Lobby: Jika berada di menu utama Roblox (Lobby),
+#      PAUSE akan otomatis dibatalkan dan langsung rejoin ke Private Server.
+#    - Fix false positive Market Trade (dari v4.0 tetap dipertahankan).
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -108,7 +108,7 @@ sisa_pause() {
 }
 
 # ─────────────────────────────────────────
-#    FUNGSI CEK HOP GRACE (v3.9)
+#    FUNGSI CEK HOP GRACE
 # ─────────────────────────────────────────
 
 is_error288_from_hop() {
@@ -121,24 +121,24 @@ is_error288_from_hop() {
 }
 
 # ─────────────────────────────────────────
-#    FUNGSI CEK LOBBY (TAMBAHAN BARU)
+#    FUNGSI CEK LOBBY (TAMBAHAN v4.1)
 # ─────────────────────────────────────────
 
 is_in_lobby() {
-    # Cek melalui dumpsys activity (script sudah jalan sebagai root)
+    # Cek melalui dumpsys activity (script jalan sebagai root)
     local CURRENT_ACT
     CURRENT_ACT=$(dumpsys activity activities 2>/dev/null | grep "mResumedActivity" | grep "$PKG")
     
     if [ -z "$CURRENT_ACT" ]; then
-        return 1 # App tidak di foreground sama sekali
+        return 1 # App tidak di foreground
     fi
     
     # Kalau ada keyword Game/Unity, berarti lagi di dalem game
     if echo "$CURRENT_ACT" | grep -qiE "GameActivity|UnityPlayerActivity|UnityPlayer"; then
-        return 1 # Masih di dalam game
+        return 1 
     fi
     
-    # Kalau roblox di foreground tapi bukan di activity game, berarti di lobby/menu utama
+    # Kalau Roblox di foreground tapi BUKAN di activity Game, berarti di lobby/menu utama
     return 0
 }
 
@@ -151,7 +151,7 @@ clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 header() {
     echo "========================================="
     echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"
-    echo "    Versi 4.0 + Lobby Stuck Fix"
+    echo "    Versi 4.1 (Fix Lobby & Market Trade)"
     echo "========================================="
 }
 
@@ -691,7 +691,7 @@ echo "0" > "$FILE_LAST_HOP"
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
 echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
-echo "    Versi 4.0 + Lobby Stuck Fix"           | tee -a "$LOG_FILE"
+echo "    Versi 4.1 (Fix Lobby & Market Trade)"  | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
@@ -739,6 +739,18 @@ while true; do
     # ── CEK PAUSE DI MAIN LOOP ──
     if is_paused; then
         if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
+            
+            # TAMBAHAN v4.1: Cek apakah user kena kick ke lobby saat PAUSE
+            if is_in_lobby; then
+                log "🏠 Terdeteksi di LOBBY saat PAUSE aktif! Mungkin kena kick dari Market. Reset pause & Auto Rejoin..."
+                echo "0" > "$FILE_PAUSE_UNTIL"
+                sleep 2
+                join_private_server
+                wait_for_ingame
+                start_monitor
+                continue
+            fi
+
             NEW_PAUSE=$(( $(date +%s) + 30 ))
             echo "$NEW_PAUSE" > "$FILE_PAUSE_UNTIL"
             if [ $((NOW - LAST_VERBOSE)) -ge 60 ]; then
@@ -767,10 +779,9 @@ while true; do
         continue
     fi
 
-    # ── CEK STUCK DI LOBBY / MENU UTAMA (TAMBAHAN BARU) ──
+    # ── CEK STUCK DI LOBBY (TAMBAHAN v4.1) ──
     if cek_apakah_terhubung; then
         if is_in_lobby; then
-            # Cek biar ga langsung rejoin pas baru pertama kali buka app (kasih grace 2 menik)
             TIME_SINCE_LAST_RELOG=$(( NOW - $(cat "$FILE_LAST_RELOG" 2>/dev/null || echo 0) ))
             if [ "$TIME_SINCE_LAST_RELOG" -gt 120 ]; then
                 log "🏠 Roblox STUCK di LOBBY (Menu Utama)! Auto Rejoin ke Private Server..."
