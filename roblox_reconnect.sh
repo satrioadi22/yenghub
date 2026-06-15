@@ -2,13 +2,13 @@
 
 # ─────────────────────────────────────────
 #    ROBLOX AUTO RECONNECT + AUTO RELOG
-#    Versi: 4.0 (Fix false positive Market Trade)
+#    Versi: 4.1 (Fix Market Trade & Lobby Stuck)
 #
-#    CHANGELOG v4.0:
-#    - Error 288 saat PAUSE aktif + Roblox masih jalan = diabaikan
-#      (fix kasus: input harga di Market Trade dianggap DC)
-#    - Error 288 saat PAUSE aktif + Roblox mati = tetap rejoin
-#    - Versi 3.9: Fix error 288 false positive saat hop
+#    CHANGELOG v4.1:
+#    - Fix Error 288 saat Market Trade: Cek apakah user terlempar ke lobby.
+#      Jika di lobby = langsung rejoin. Jika masih di game = diabaikan.
+#    - Fix Stuck di Lobby: Deteksi jika Roblox nyala tapi di menu utama,
+#      script akan otomatis rejoin ke private server.
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -109,7 +109,7 @@ sisa_pause() {
 }
 
 # ─────────────────────────────────────────
-#    FUNGSI CEK HOP GRACE (v3.9)
+#    FUNGSI CEK HOP GRACE
 # ─────────────────────────────────────────
 
 is_error288_from_hop() {
@@ -122,6 +122,28 @@ is_error288_from_hop() {
 }
 
 # ─────────────────────────────────────────
+#    FUNGSI CEK LOBBY (v4.1 BARU)
+# ─────────────────────────────────────────
+
+is_in_lobby() {
+    # Cek melalui dumpsys activity (karena script jalan sebagai root)
+    # Jika aktivitas saat ini BUKAN GameActivity/Unity, berarti di lobby
+    local CURRENT_ACT
+    CURRENT_ACT=$(dumpsys activity activities 2>/dev/null | grep "mResumedActivity" | grep "$PKG")
+    
+    if [ -z "$CURRENT_ACT" ]; then
+        return 1 # App tidak di foreground sama sekali
+    fi
+    
+    if echo "$CURRENT_ACT" | grep -qiE "GameActivity|UnityPlayerActivity"; then
+        return 1 # Masih di dalam game
+    fi
+    
+    # Jika tidak ada indikasi game, berarti di lobby/main menu
+    return 0
+}
+
+# ─────────────────────────────────────────
 #    FUNGSI TAMPILAN
 # ─────────────────────────────────────────
 
@@ -130,7 +152,7 @@ clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 header() {
     echo "========================================="
     echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"
-    echo "    Versi 4.0 (Fix false positive Market Trade)"
+    echo "    Versi 4.1 (Fix Market Trade & Lobby)"
     echo "========================================="
 }
 
@@ -277,8 +299,7 @@ menu_pause() {
             echo ""
             echo "  ✅ Pause aktif selama ${MENIT} menit!"
             echo "  Sekarang kamu aman pindah ke Market Trade."
-            echo "  Saat PAUSE aktif, error apapun dari Market Trade"
-            echo "  tidak akan trigger rejoin selama Roblox masih jalan."
+            echo "  Jika kena kick ke lobby, script akan otomatis rejoin."
         fi
     else
         echo ""
@@ -485,6 +506,21 @@ monitor_disconnect() {
             continue
         fi
 
+        # ── DETEKSI MASUK LOBBY / MENU UTAMA (v4.1) ──
+        if echo "$line" | grep -qiE "LeaveGame|ReturnedToMenu|MainMenu|GameDisconnected|Displayed com.roblox.client.*MainActivity"; then
+            if is_paused; then
+                log "🚨 Deteksi masuk LOBBY saat PAUSE aktif! Kick dari Market Trade? Reset pause & rejoin."
+                echo "0" > "$FILE_PAUSE_UNTIL"
+                echo "1" > "$FILE_FORCE_REJOIN"
+            else
+                if ! is_error288_from_hop; then
+                    log "🏠 Deteksi masuk LOBBY (Stuck di menu). Auto Rejoin ke Private Server!"
+                    echo "1" > "$FILE_FORCE_REJOIN"
+                fi
+            fi
+            continue
+        fi
+
         DC_DETECTED=0
         DC_REASON=""
 
@@ -515,42 +551,44 @@ monitor_disconnect() {
             # ══════════════════════════════════════════════════
             if [ "$DC_REASON" = "Error288" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
 
-                # [1] Kalau error 288 muncul dalam HOP_GRACE detik setelah hop
-                #     = disconnect normal saat teleport → skip
+                # [1] Kalau error 288 muncul dalam HOP_GRACE detik setelah hop = skip
                 if is_error288_from_hop; then
                     log "ℹ️  Error 288 dalam window hop (${HOP_GRACE}s) — normal saat teleport, diabaikan."
                     continue
                 fi
 
-                # [2] ── FIX v4.0 ──
+                # [2] ── FIX v4.1 ──
                 #     Kalau PAUSE aktif (misal lagi di Market Trade):
-                #     Cek dulu apakah Roblox masih beneran jalan.
-                #     Kalau masih jalan = false positive dari UI/input Market Trade → skip
-                #     Kalau Roblox mati = DC beneran → tetap rejoin
+                #     Cek apakah user udah ke lobby atau masih di game.
                 if is_paused; then
-                    log "⚠️  Error 288 terdeteksi, tapi PAUSE aktif — cek apakah Roblox masih jalan..."
+                    log "⚠️  Error 288 terdeteksi saat PAUSE aktif — cek posisi app..."
                     sleep "$MT_CHECK_DELAY"
 
-                    if cek_apakah_terhubung; then
+                    if is_in_lobby; then
+                        log "💥 Kena kick ke LOBBY dari Market Trade! Reset pause & force rejoin."
+                        echo "0" > "$FILE_PAUSE_UNTIL"
+                        echo "1" > "$FILE_FORCE_REJOIN"
+                        # Lanjut ke bawah agar force rejoin tereksekusi
+                    elif cek_apakah_terhubung; then
                         SISA=$(sisa_pause)
-                        log "✅ Roblox masih jalan (sisa pause ${SISA}s) — kemungkinan false positive dari Market Trade, diabaikan."
+                        log "✅ Roblox masih di game (sisa pause ${SISA}s) — false positive Market Trade, diabaikan."
                         continue
                     else
                         log "💥 Roblox mati saat PAUSE aktif — ini DC beneran! Reset pause & force rejoin."
                         echo "0" > "$FILE_PAUSE_UNTIL"
-                        # lanjut ke blok rejoin di bawah
+                        echo "1" > "$FILE_FORCE_REJOIN"
                     fi
+                else
+                    # [3] Error 288 beneran (di luar hop & di luar pause) -> force rejoin
+                    log "🚨 Koneksi Terputus (Error 288) — Force Rejoin ke Private Server!"
+                    echo "0" > "$FILE_RECONNECTING"
+                    echo "1" > "$FILE_FORCE_REJOIN"
+                    sleep 3
+                    join_private_server
+                    wait_for_ingame
+                    echo "0" > "$FILE_FORCE_REJOIN"
+                    continue
                 fi
-
-                # [3] Error 288 beneran (di luar hop & di luar Market Trade pause) → force rejoin
-                log "🚨 Koneksi Terputus (Error 288) — Force Rejoin ke Private Server!"
-                echo "0" > "$FILE_RECONNECTING"
-                echo "1" > "$FILE_FORCE_REJOIN"
-                sleep 3
-                join_private_server
-                wait_for_ingame
-                echo "0" > "$FILE_FORCE_REJOIN"
-                continue
             fi
 
             # ══════════════════════════════════════════════════
@@ -600,7 +638,7 @@ monitor_disconnect() {
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
-        "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Sending disconnect with reason|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|teleport|TeleportService|ServerHop|server hop|ChangingServers|doTeleport|finishTeleportWithJoinScriptPayload|SessionTransitionFSM|HydraHub|Hydra.*Loaded")
+        "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Sending disconnect with reason|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|teleport|TeleportService|ServerHop|server hop|ChangingServers|doTeleport|finishTeleportWithJoinScriptPayload|SessionTransitionFSM|HydraHub|Hydra.*Loaded|LeaveGame|ReturnedToMenu|MainMenu|GameDisconnected|Displayed com.roblox.client")
 }
 
 start_monitor() {
@@ -670,7 +708,7 @@ echo "0" > "$FILE_LAST_HOP"
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
 echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
-echo "    Versi 4.0 (Fix false positive Market Trade)" | tee -a "$LOG_FILE"
+echo "    Versi 4.1 (Fix Market Trade & Lobby)"  | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
@@ -678,15 +716,11 @@ log "Reconnect        : DC detection  → $(show_toggle $RECONNECT_OTOMATIS)"
 log "Restart crash    : auto restart  → $(show_toggle $RESTART_KALAU_CRASH)"
 log "Reconnect@home   : saat home     → $(show_toggle $RECONNECT_SAAT_HOME)"
 log "Hop grace window : ${HOP_GRACE} detik (error 288 setelah hop diabaikan)"
-log "MT check delay   : ${MT_CHECK_DELAY} detik (delay cek Roblox saat error 288 + pause)"
 log "Log file         : $LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 echo ""
-echo "  💡 TIP: Sebelum pindah ke Market Trade,"
-echo "     aktifkan PAUSE dulu dari menu (pilih 4)"
-echo "     atau buka Termux baru dan ketik:"
-echo "     echo \$(( \$(date +%s) + 900 )) > /data/local/tmp/rbx_state/pause_until"
-echo "     (pause 15 menit)"
+echo "  💡 TIP: Jika di Market Trade kena kick (stuck di lobby),"
+echo "     script akan otomatis mendeteksi dan rejoin lagi."
 echo ""
 
 join_private_server
@@ -717,7 +751,19 @@ while true; do
 
     # ── CEK PAUSE DI MAIN LOOP ──
     if is_paused; then
-        if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
+        if cek_apakah_terhubung; then
+            
+            # Cek apakah user kena kick ke lobby saat PAUSE (v4.1)
+            if is_in_lobby; then
+                log "🚨 Roblox ada di LOBBY saat PAUSE! Kemungkinan kena kick dari Market Trade. Auto rejoin..."
+                echo "0" > "$FILE_PAUSE_UNTIL"
+                sleep 2
+                join_private_server
+                wait_for_ingame
+                start_monitor
+                continue
+            fi
+
             NEW_PAUSE=$(( $(date +%s) + 30 ))
             echo "$NEW_PAUSE" > "$FILE_PAUSE_UNTIL"
             if [ $((NOW - LAST_VERBOSE)) -ge 60 ]; then
@@ -728,7 +774,7 @@ while true; do
             log "⚠️ Roblox tutup saat PAUSE aktif — tunggu 20 detik dulu (mungkin Hydra hop)..."
             sleep 20
 
-            if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
+            if cek_apakah_terhubung; then
                 log "✅ Roblox hidup lagi — Hydra hop sukses, pause diperpanjang."
                 NEW_PAUSE=$(( $(date +%s) + 30 ))
                 echo "$NEW_PAUSE" > "$FILE_PAUSE_UNTIL"
@@ -746,9 +792,23 @@ while true; do
         continue
     fi
 
+    # ── CEK STUCK DI LOBBY (v4.1) ──
+    if cek_apakah_terhubung; then
+        if is_in_lobby; then
+            if ! is_error288_from_hop; then
+                log "🏠 Roblox STUCK di LOBBY (bukan dari hop)! Auto Rejoin ke Private Server..."
+                sleep 2
+                join_private_server
+                wait_for_ingame
+                start_monitor
+                continue
+            fi
+        fi
+    fi
+
     # ── CEK CRASH BIASA (hanya saat tidak pause) ──
     if [ "$RESTART_KALAU_CRASH" = "1" ]; then
-        if ! ps -A 2>/dev/null | grep -q "$PKG" && ! pidof "$PKG" > /dev/null 2>&1; then
+        if ! cek_apakah_terhubung; then
             log "💥 Roblox crash! Restart..."
             sleep 3
             join_private_server
