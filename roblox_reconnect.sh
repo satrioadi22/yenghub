@@ -1,20 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
 # ─────────────────────────────────────────
-#    ROBLOX AUTO RECONNECT - MARKET DIRECT
-#    Versi: 5.0 (Direct Market Link, no Hop/PS)
+#    ROBLOX AUTO RECONNECT + AUTO RELOG
+#    Versi: 4.0 (Fix false positive Market Trade)
 #
-#    CHANGELOG v5.0:
-#    - Dihapus: semua logic hop/teleport (Hydra/TeleportService)
-#      karena URL sekarang langsung masuk ke Market
-#      (privateServerLinkCode), jadi tidak ada perpindahan
-#      dari Private Server -> Market lagi.
-#    - Dihapus: PAUSE khusus "sebelum pindah ke Market Trade"
-#      (fitur pause manual tetap ada, tapi general-purpose,
-#      bukan lagi terikat ke proses hop)
-#    - Ditambah: deteksi popup "Koneksi Terputus" untuk
-#      SEMUA kode eror (285, 288, dst) - bukan cuma 288
-#    - Disederhanakan: satu jalur reconnect untuk semua jenis DC
+#    CHANGELOG v4.0:
+#    - Error 288 saat PAUSE aktif + Roblox masih jalan = diabaikan
+#      (fix kasus: input harga di Market Trade dianggap DC)
+#    - Error 288 saat PAUSE aktif + Roblox mati = tetap rejoin
+#    - Versi 3.9: Fix error 288 false positive saat hop
 # ─────────────────────────────────────────
 
 PKG="com.roblox.client"
@@ -29,10 +23,14 @@ FILE_LAST_RELOG="$STATE_DIR/last_relog"
 FILE_RECONNECTING="$STATE_DIR/reconnecting"
 FILE_GRACE_UNTIL="$STATE_DIR/grace_until"
 FILE_PAUSE_UNTIL="$STATE_DIR/pause_until"
+FILE_FORCE_REJOIN="$STATE_DIR/force_rejoin"
+FILE_LAST_HOP="$STATE_DIR/last_hop"
+
+HOP_GRACE=60        # detik — error 288 dalam window ini setelah hop = diabaikan
+MT_CHECK_DELAY=5    # detik — delay cek apakah Roblox masih jalan saat error 288 + pause
 
 RECONNECT_COOLDOWN=45
-TELEPORT_GRACE=180        # detik — abaikan DC signal sesaat setelah kita baru join
-DC_CONFIRM_DELAY=5        # detik — delay kecil sebelum eksekusi rejoin (anti double-trigger)
+TELEPORT_GRACE=180
 MONITOR_PID=""
 LAST_VERBOSE=0
 VERBOSE_INTERVAL=600
@@ -50,7 +48,7 @@ load_config() {
 save_config() {
     cat > "$CONFIG_FILE" <<EOF
 # ─────────────────────────────────────────
-#    CONFIG ROBLOX AUTO RECONNECT (MARKET)
+#    CONFIG ROBLOX AUTO RECONNECT
 #    Edit angka: 1 = ON, 0 = OFF
 # ─────────────────────────────────────────
 
@@ -79,7 +77,7 @@ default_config() {
 }
 
 # ─────────────────────────────────────────
-#    FUNGSI PAUSE RECONNECT (manual, general-purpose)
+#    FUNGSI PAUSE RECONNECT
 # ─────────────────────────────────────────
 
 is_paused() {
@@ -111,6 +109,19 @@ sisa_pause() {
 }
 
 # ─────────────────────────────────────────
+#    FUNGSI CEK HOP GRACE (v3.9)
+# ─────────────────────────────────────────
+
+is_error288_from_hop() {
+    local NOW; NOW=$(date +%s)
+    local LAST_HOP; LAST_HOP=$(cat "$FILE_LAST_HOP" 2>/dev/null)
+    if [ -n "$LAST_HOP" ] && [ "$NOW" -lt $(( LAST_HOP + HOP_GRACE )) ]; then
+        return 0
+    fi
+    return 1
+}
+
+# ─────────────────────────────────────────
 #    FUNGSI TAMPILAN
 # ─────────────────────────────────────────
 
@@ -118,8 +129,8 @@ clr() { clear 2>/dev/null || printf '\033[2J\033[H'; }
 
 header() {
     echo "========================================="
-    echo "    ROBLOX AUTO RECONNECT - MARKET DIRECT"
-    echo "    Versi 5.0"
+    echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"
+    echo "    Versi 4.0 (Fix false positive Market Trade)"
     echo "========================================="
 }
 
@@ -130,7 +141,7 @@ show_toggle() {
 
 show_current_config() {
     echo ""
-    echo "  URL (Market) : ${URL:-[belum diisi]}"
+    echo "  URL    : ${URL:-[belum diisi]}"
     echo "  Relog  : ${RELOG_SETIAP_JAM} jam $([ "$RELOG_SETIAP_JAM" = "0" ] && echo '(OFF)' || echo '(ON)')"
     echo "  Reconnect otomatis : $(show_toggle $RECONNECT_OTOMATIS)"
     echo "  Restart kalau crash: $(show_toggle $RESTART_KALAU_CRASH)"
@@ -150,8 +161,7 @@ wizard_setup() {
     echo ""
 
     while true; do
-        echo "  Paste link Market kamu"
-        echo "  (contoh: https://www.roblox.com/id/games/129954712878723/Grow-a-Garden?privateServerLinkCode=...):"
+        echo "  Paste link private server Roblox kamu:"
         printf "  > "
         read -r URL
         if [ -n "$URL" ]; then
@@ -217,9 +227,9 @@ menu_utama() {
         echo "  Mau ngapain?"
         echo ""
         echo "  1) Langsung jalanin"
-        echo "  2) Ganti URL Market"
+        echo "  2) Ganti URL private server"
         echo "  3) Ubah setting (relog, reconnect, dll)"
-        echo "  4) ⏸️  Pause reconnect (misal mau isi form/trading manual)"
+        echo "  4) ⏸️  Pause reconnect (buat pindah ke Market Trade)"
         echo "  5) Keluar"
         echo ""
         printf "  Pilih (1-5): "
@@ -248,9 +258,9 @@ menu_pause() {
     echo "  ⏸️   PAUSE RECONNECT"
     echo "  ══════════════════════════════════════"
     echo ""
-    echo "  Pakai ini kalau kamu mau interaksi manual"
-    echo "  (isi form, dll) tanpa risiko script salah"
-    echo "  nangkep itu sebagai disconnect."
+    echo "  Gunakan ini sebelum kamu pindah ke"
+    echo "  Market Trade agar script tidak"
+    echo "  langsung rejoin ke private server."
     echo ""
     echo "  Berapa menit mau di-pause?"
     echo "  (contoh: 15 untuk 15 menit, 0 untuk batalkan pause)"
@@ -266,6 +276,9 @@ menu_pause() {
             set_pause "$MENIT"
             echo ""
             echo "  ✅ Pause aktif selama ${MENIT} menit!"
+            echo "  Sekarang kamu aman pindah ke Market Trade."
+            echo "  Saat PAUSE aktif, error apapun dari Market Trade"
+            echo "  tidak akan trigger rejoin selama Roblox masih jalan."
         fi
     else
         echo ""
@@ -281,7 +294,7 @@ menu_ganti_url() {
     echo "  URL saat ini:"
     echo "  ${URL:-[kosong]}"
     echo ""
-    echo "  Paste URL Market baru (Enter untuk batal):"
+    echo "  Paste URL baru (Enter untuk batal):"
     printf "  > "
     read -r NEW_URL
     if [ -n "$NEW_URL" ]; then
@@ -391,9 +404,9 @@ log() {
     echo "[$(date +%H:%M:%S)] $1" | tee -a "$LOG_FILE"
 }
 
-join_market() {
+join_private_server() {
     log ""
-    log "🚀 Join ke Market..."
+    log "🚀 Join private server Grow a Garden..."
 
     echo "1" > "$FILE_RECONNECTING"
     echo $(( $(date +%s) + TELEPORT_GRACE )) > "$FILE_GRACE_UNTIL"
@@ -402,7 +415,7 @@ join_market() {
     sleep 4
     am start -a android.intent.action.VIEW -d "$URL" "$PKG"
 
-    log "✅ Market launched"
+    log "✅ Private server launched"
     echo "$(date +%s)" > "$FILE_LAST_RELOG"
 }
 
@@ -444,36 +457,6 @@ wait_for_ingame() {
     echo "0" > "$FILE_RECONNECTING"
 }
 
-# Jalankan rejoin dengan semua guard (cooldown, sudah reconnecting, dsb)
-eksekusi_rejoin() {
-    local ALASAN="$1"
-
-    if is_paused; then
-        SISA=$(sisa_pause)
-        log "⏸️ DC terdeteksi ($ALASAN) tapi PAUSE aktif (sisa ${SISA}s) — skip reconnect."
-        return
-    fi
-
-    if [ "$RECONNECT_OTOMATIS" != "1" ]; then
-        return
-    fi
-
-    NOW=$(date +%s)
-    GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
-    if [ -n "$GRACE" ] && [ "$NOW" -lt "$GRACE" ]; then
-        return
-    fi
-
-    RECONNECTING=$(cat "$FILE_RECONNECTING" 2>/dev/null)
-    [ "$RECONNECTING" = "1" ] && return
-
-    log "🚨 Koneksi Terputus terdeteksi ($ALASAN) — Auto Rejoin ke Market!"
-    echo "$NOW" > "$FILE_LAST_RECONNECT"
-    sleep "$DC_CONFIRM_DELAY"
-    join_market
-    wait_for_ingame
-}
-
 monitor_disconnect() {
     log "🔍 Monitor DC aktif (PID: $$)"
     echo "0" > "$FILE_IN_BACKGROUND"
@@ -494,30 +477,30 @@ monitor_disconnect() {
             continue
         fi
 
-        # ── DETEKSI DISCONNECT (semua kode eror: 285, 288, dll) ──
+        # ── DETEKSI HOP / TELEPORT ──
+        if echo "$line" | grep -qiE "teleport|TeleportService|ServerHop|server hop|ChangingServers|doTeleport|finishTeleportWithJoinScriptPayload|SessionTransitionFSM.*Teleported|HydraHub|Hydra.*Loaded"; then
+            log "🔄 Deteksi Hop (Hydra/Delta) — Auto PAUSE 3 menit!"
+            date +%s > "$FILE_LAST_HOP"
+            set_pause 3
+            continue
+        fi
+
         DC_DETECTED=0
         DC_REASON=""
 
-        if echo "$line" | grep -qiE "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|shutdown|kick"; then
+        if echo "$line" | grep -qiE "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Error code: 288|Disconnect error: 288|shutdown|kick"; then
             DC_DETECTED=1
-            KODE=$(echo "$line" | grep -oE "[0-9]{3}" | head -1)
-            DC_REASON="Disconnect signal${KODE:+ (kode: $KODE)}"
-        fi
-
-        if echo "$line" | grep -qiE "Error code: [0-9]+|Disconnect error: [0-9]+"; then
-            DC_DETECTED=1
-            KODE=$(echo "$line" | grep -oE "[0-9]{3}" | head -1)
-            DC_REASON="Error code${KODE:+ $KODE}"
+            DC_REASON="Error288"
         fi
 
         if echo "$line" | grep -qi "Sending disconnect with reason"; then
             DC_DETECTED=1
-            DC_REASON="Sending disconnect"
+            DC_REASON="Sending disconnect (Logcat Client)"
         fi
 
         if echo "$line" | grep -qi "Lost connection with reason"; then
             DC_DETECTED=1
-            DC_REASON="Lost connection"
+            DC_REASON="Lost connection with reason"
         fi
 
         if echo "$line" | grep -qi "Disconnected from server for reason"; then
@@ -526,12 +509,98 @@ monitor_disconnect() {
         fi
 
         if [ "$DC_DETECTED" -eq 1 ]; then
-            eksekusi_rejoin "$DC_REASON"
-            continue
+
+            # ══════════════════════════════════════════════════
+            #  BLOK ERROR 288 / LOST CONNECTION
+            # ══════════════════════════════════════════════════
+            if [ "$DC_REASON" = "Error288" ] || [ "$DC_REASON" = "Lost connection with reason" ]; then
+
+                # [1] Kalau error 288 muncul dalam HOP_GRACE detik setelah hop
+                #     = disconnect normal saat teleport → skip
+                if is_error288_from_hop; then
+                    log "ℹ️  Error 288 dalam window hop (${HOP_GRACE}s) — normal saat teleport, diabaikan."
+                    continue
+                fi
+
+                # [2] ── FIX v4.0 ──
+                #     Kalau PAUSE aktif (misal lagi di Market Trade):
+                #     Cek dulu apakah Roblox masih beneran jalan.
+                #     Kalau masih jalan = false positive dari UI/input Market Trade → skip
+                #     Kalau Roblox mati = DC beneran → tetap rejoin
+                if is_paused; then
+                    log "⚠️  Error 288 terdeteksi, tapi PAUSE aktif — cek apakah Roblox masih jalan..."
+                    sleep "$MT_CHECK_DELAY"
+
+                    if cek_apakah_terhubung; then
+                        SISA=$(sisa_pause)
+                        log "✅ Roblox masih jalan (sisa pause ${SISA}s) — kemungkinan false positive dari Market Trade, diabaikan."
+                        continue
+                    else
+                        log "💥 Roblox mati saat PAUSE aktif — ini DC beneran! Reset pause & force rejoin."
+                        echo "0" > "$FILE_PAUSE_UNTIL"
+                        # lanjut ke blok rejoin di bawah
+                    fi
+                fi
+
+                # [3] Error 288 beneran (di luar hop & di luar Market Trade pause) → force rejoin
+                log "🚨 Koneksi Terputus (Error 288) — Force Rejoin ke Private Server!"
+                echo "0" > "$FILE_RECONNECTING"
+                echo "1" > "$FILE_FORCE_REJOIN"
+                sleep 3
+                join_private_server
+                wait_for_ingame
+                echo "0" > "$FILE_FORCE_REJOIN"
+                continue
+            fi
+
+            # ══════════════════════════════════════════════════
+            #  BLOK DC BIASA (bukan error 288)
+            # ══════════════════════════════════════════════════
+
+            # Cek pause dulu
+            if is_paused; then
+                SISA=$(sisa_pause)
+                log "⏸️ DC terdeteksi ($DC_REASON) tapi PAUSE aktif (sisa ${SISA}s) — skip reconnect."
+                continue
+            fi
+
+            if [ "$RECONNECT_OTOMATIS" = "1" ]; then
+                WAIT_TIME=45
+                log "⚠️ Deteksi DC biasa ($DC_REASON). Menunggu $WAIT_TIME detik..."
+                sleep $WAIT_TIME
+
+                if is_paused; then
+                    log "⏸️ PAUSE aktif setelah tunggu — skip reconnect."
+                    continue
+                fi
+
+                if cek_apakah_terhubung; then
+                    log "✅ Game normal / Hop Delta sukses. Skip Reconnect."
+                    DC_DETECTED=0
+                    continue
+                fi
+            else
+                continue
+            fi
+
+            log "❌ Tetap Terputus. Mengembalikan ke Private Server..."
+
+            NOW=$(date +%s)
+            GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
+            if [ -n "$GRACE" ] && [ "$NOW" -lt "$GRACE" ]; then continue; fi
+            RECONNECTING=$(cat "$FILE_RECONNECTING")
+            [ "$RECONNECTING" = "1" ] && continue
+
+            log "❌ Eksekusi Rejoin Utama!"
+            echo "$NOW" > "$FILE_LAST_RECONNECT"
+            sleep 5
+            join_private_server
+            wait_for_ingame
+
         fi
 
     done < <(logcat -v time 2>/dev/null | grep --line-buffered -iE \
-        "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Sending disconnect with reason|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|Error code: [0-9]|Disconnect error: [0-9]|shutdown|kick")
+        "Client:Disconnect|NetworkClient:Remove|MegaReplicatorLogDisconnectCleanUpLog|sendAnalyticsBeforeLeave|Connection refused|Sending disconnect with reason|Lost connection with reason|Disconnected from server for reason|foregroundActivities=|288|shutdown|kick|teleport|TeleportService|ServerHop|server hop|ChangingServers|doTeleport|finishTeleportWithJoinScriptPayload|SessionTransitionFSM|HydraHub|Hydra.*Loaded")
 }
 
 start_monitor() {
@@ -595,23 +664,32 @@ echo "0" > "$FILE_IN_BACKGROUND"
 echo "$(date +%s)" > "$FILE_LAST_RELOG"
 echo "0" > "$FILE_RECONNECTING"
 echo "0" > "$FILE_PAUSE_UNTIL"
+echo "0" > "$FILE_FORCE_REJOIN"
+echo "0" > "$FILE_LAST_HOP"
 
 clr
 echo "=========================================" | tee -a "$LOG_FILE"
-echo "    ROBLOX AUTO RECONNECT - MARKET DIRECT" | tee -a "$LOG_FILE"
-echo "    Versi 5.0"                              | tee -a "$LOG_FILE"
+echo "    ROBLOX AUTO RECONNECT + AUTO RELOG"    | tee -a "$LOG_FILE"
+echo "    Versi 4.0 (Fix false positive Market Trade)" | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
-log "URL (Market)     : $URL"
+log "URL              : $URL"
 log "Relog            : setiap ${RELOG_SETIAP_JAM} jam    → $([ "$RELOG_SETIAP_JAM" = "0" ] && echo OFF || echo ON)"
 log "Reconnect        : DC detection  → $(show_toggle $RECONNECT_OTOMATIS)"
 log "Restart crash    : auto restart  → $(show_toggle $RESTART_KALAU_CRASH)"
 log "Reconnect@home   : saat home     → $(show_toggle $RECONNECT_SAAT_HOME)"
-log "Confirm delay    : ${DC_CONFIRM_DELAY} detik sebelum eksekusi rejoin"
+log "Hop grace window : ${HOP_GRACE} detik (error 288 setelah hop diabaikan)"
+log "MT check delay   : ${MT_CHECK_DELAY} detik (delay cek Roblox saat error 288 + pause)"
 log "Log file         : $LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 echo ""
+echo "  💡 TIP: Sebelum pindah ke Market Trade,"
+echo "     aktifkan PAUSE dulu dari menu (pilih 4)"
+echo "     atau buka Termux baru dan ketik:"
+echo "     echo \$(( \$(date +%s) + 900 )) > /data/local/tmp/rbx_state/pause_until"
+echo "     (pause 15 menit)"
+echo ""
 
-join_market
+join_private_server
 wait_for_ingame
 
 log "🔍 Monitoring aktif..."
@@ -622,24 +700,58 @@ start_monitor
 while true; do
 
     NOW=$(date +%s)
+    GRACE=$(cat "$FILE_GRACE_UNTIL" 2>/dev/null)
 
-    # ── CEK PAUSE MANUAL DI MAIN LOOP ──
+    # ── CEK FORCE REJOIN FLAG ──
+    FORCE_REJOIN=$(cat "$FILE_FORCE_REJOIN" 2>/dev/null)
+    if [ "$FORCE_REJOIN" = "1" ]; then
+        log "🚨 Force rejoin flag aktif di main loop — eksekusi rejoin!"
+        echo "0" > "$FILE_PAUSE_UNTIL"
+        echo "0" > "$FILE_FORCE_REJOIN"
+        sleep 3
+        join_private_server
+        wait_for_ingame
+        start_monitor
+        continue
+    fi
+
+    # ── CEK PAUSE DI MAIN LOOP ──
     if is_paused; then
-        SISA=$(sisa_pause)
-        if [ $((NOW - LAST_VERBOSE)) -ge 60 ]; then
-            log "⏸️ PAUSE aktif — sisa ${SISA}s — reconnect ditahan"
-            LAST_VERBOSE=$NOW
+        if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
+            NEW_PAUSE=$(( $(date +%s) + 30 ))
+            echo "$NEW_PAUSE" > "$FILE_PAUSE_UNTIL"
+            if [ $((NOW - LAST_VERBOSE)) -ge 60 ]; then
+                log "⏸️ PAUSE aktif — Roblox masih jalan di Market Trade — reconnect ditahan"
+                LAST_VERBOSE=$NOW
+            fi
+        else
+            log "⚠️ Roblox tutup saat PAUSE aktif — tunggu 20 detik dulu (mungkin Hydra hop)..."
+            sleep 20
+
+            if ps -A 2>/dev/null | grep -q "$PKG" || pidof "$PKG" > /dev/null 2>&1; then
+                log "✅ Roblox hidup lagi — Hydra hop sukses, pause diperpanjang."
+                NEW_PAUSE=$(( $(date +%s) + 30 ))
+                echo "$NEW_PAUSE" > "$FILE_PAUSE_UNTIL"
+            else
+                log "💥 Roblox beneran tutup saat di Market Trade — Rejoin ke Private Server..."
+                echo "0" > "$FILE_PAUSE_UNTIL"
+                sleep 3
+                join_private_server
+                wait_for_ingame
+                start_monitor
+            fi
         fi
+
         sleep "$CHECK_INTERVAL"
         continue
     fi
 
-    # ── CEK CRASH BIASA ──
+    # ── CEK CRASH BIASA (hanya saat tidak pause) ──
     if [ "$RESTART_KALAU_CRASH" = "1" ]; then
         if ! ps -A 2>/dev/null | grep -q "$PKG" && ! pidof "$PKG" > /dev/null 2>&1; then
-            log "💥 Roblox crash / tertutup! Restart..."
+            log "💥 Roblox crash! Restart..."
             sleep 3
-            join_market
+            join_private_server
             wait_for_ingame
             start_monitor
             continue
@@ -647,15 +759,20 @@ while true; do
     fi
 
     if check_relog_needed; then
+        if is_paused; then
+            log "⏸️ Waktunya relog tapi PAUSE aktif — skip relog."
+            sleep "$CHECK_INTERVAL"
+            continue
+        fi
         log "🔄 Relog setiap ${RELOG_SETIAP_JAM} jam..."
-        join_market
+        join_private_server
         wait_for_ingame
         start_monitor
         continue
     fi
 
     if [ $((NOW - LAST_VERBOSE)) -ge "$VERBOSE_INTERVAL" ]; then
-        log "✅ Roblox running di Market"
+        log "✅ Roblox running"
         LAST_VERBOSE=$NOW
     fi
 
